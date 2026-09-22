@@ -1,12 +1,23 @@
-name: Deploy site
+name: Build and publish
 
+# Pushes to main build and deploy the Pages site. Publishing a release
+# builds that tag and attaches the single-file HTML to the release.
+# workflow_dispatch can do either: leave `tag` empty to (re)deploy the
+# site, or set it to (re)attach a release asset.
 on:
   push:
     branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the single-file build to
+        required: false
+        default: ''
 
 permissions:
-  contents: read
+  contents: write # attach the single-file build to a release
   pages: write
   id-token: write
 
@@ -47,19 +58,32 @@ jobs:
       - run: node scripts/build-single-file.mjs
         working-directory: web
 
+      - name: Attach the single-file build to the release
+        if: github.event_name == 'release' || inputs.tag != ''
+        working-directory: web
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          ASSET: dist-single/valheim-cheat-radar.html
+        run: gh release upload "$TAG" "$ASSET" --clobber
+
       # Serve the asset directory verbatim.
       - run: touch dist/.nojekyll
         working-directory: web
+        if: github.event_name != 'release' && inputs.tag == ''
 
       - uses: actions/configure-pages@v5
+        if: github.event_name != 'release' && inputs.tag == ''
         with:
           enablement: true
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'release' && inputs.tag == ''
         with:
           path: web/dist
 
   deploy:
     needs: build
+    if: github.event_name != 'release' && inputs.tag == ''
     runs-on: ubuntu-latest
     environment:
       name: github-pages
