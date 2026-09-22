@@ -1,0 +1,23 @@
+# Original backups contain world data and plaintext server credentials.
+*.tar.zst
+character-saves/
+
+# Generated audit reports over real saves; local only.
+reports-rust/
+
+# Optional local expectations for one private save set (see --oracle).
+oracle.local.txt
+
+# Local analysis artifacts and agent runtime state.
+_bench/
+.pi/
+__pycache__/
+*.pyc
+.ruff_cache/
+
+target/
+.tools/
+node_modules/
+.vitest/
+web/node_modules/
+web/dist/

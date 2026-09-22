@@ -1,0 +1,14 @@
+{
+  "name": "valheim-backup-cheat-scanner",
+  "version": "0.1.0",
+  "files": [
+    "valheim_backup_cheat_scanner_bg.wasm",
+    "valheim_backup_cheat_scanner.js",
+    "valheim_backup_cheat_scanner.d.ts"
+  ],
+  "module": "valheim_backup_cheat_scanner.js",
+  "types": "valheim_backup_cheat_scanner.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
