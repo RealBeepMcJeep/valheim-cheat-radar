@@ -43,6 +43,10 @@ jobs:
       - run: npm run build
         working-directory: web
 
+      # Keeps single-file inlining honest against Vite output changes.
+      - run: node scripts/build-single-file.mjs
+        working-directory: web
+
       # Serve the asset directory verbatim.
       - run: touch dist/.nojekyll
         working-directory: web

@@ -27,6 +27,16 @@ npm run wasm:build
 npm run build
 ```
 
+Build the single-file download that is attached to GitHub Releases:
+
+```text
+cd web
+npm run build:single   # writes dist-single/valheim-cheat-radar.html
+gh release create v0.1.0 --title v0.1.0 --notes "…" dist-single/valheim-cheat-radar.html#valheim-cheat-radar.html
+```
+
+`dist-single/valheim-cheat-radar.html` is one self-contained file: CSS, bundle, module worker, and the WASM (base64) are all inlined, so it works when opened directly from disk. Two browser facts shape that build, both verified in a real browser: a `blob:` **module** worker is refused from a `file://` page while a `data:` module worker runs, and the worker therefore resolves the WASM from a `data:application/wasm` URL rather than a relative path. `web/scripts/build-single-file.mjs` fails loudly if Vite's output shape changes instead of emitting a broken file, and the deploy workflow runs it on every push so drift surfaces immediately.
+
 `web/scripts/build-wasm.mjs` uses `.tools/wasm-pack/bin/wasm-pack.exe` when present, otherwise `wasm-pack` from `PATH`. `.tools/`, `target/`, `web/node_modules/`, and `web/dist/` are ignored. The checked-in `web/wasm/pkg/` is the generated deployment input; regenerate it when Rust changes. `cargo check --target wasm32-unknown-unknown --release` also checks the library and its no-op WASM binary entry point.
 
 ## Supported inputs

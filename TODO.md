@@ -12,7 +12,14 @@ Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `pla
       `realbeepmcjeep.github.io/valheim-cheat-radar/` (never the user-site repo). Verified live: the
       deployed WASM parses a synthetic legacy-v37 save end-to-end, and the user site is byte-for-byte
       unchanged.
-- [ ] Add redacted sample saves/fixtures so the tool can be demonstrated without real save data.
+
+## Deferred by the owner
+
+- [ ] **License.** The repository is public with no `LICENSE`, so all rights are reserved by default;
+      `Cargo.toml` also omits `license`/`repository` until this is decided.
+- [ ] **Redacted sample saves/fixtures** so the tool can be demonstrated (and `--validate` exercised)
+      without real save data. `oracle.local.txt` currently carries this save set's expectations and is
+      deliberately gitignored.
 
 ## Verify the audit
 
@@ -51,6 +58,8 @@ Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `pla
       the list. Chunk grouping itself is unsuitable — one chunk spans ~14 distinct sites and splits
       ~10% of true 30 m neighbours.
 - [ ] Broader browser compatibility coverage.
+- [ ] Attach the single-file build to a release automatically on tag push (today it is one documented
+      `gh release create … dist-single/valheim-cheat-radar.html` command).
 
 ## Map: making it a *terrain* map
 

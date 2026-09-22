@@ -130,21 +130,24 @@ Corrected order — the scrub happens **before** the first commit, so nothing le
       a real defect: the worker masked wasm-bindgen's string errors (`74e7a8c`), so a rejected save
       now shows the parser's actual message.
 
-### Phase 5 — Single-file build (deferred)
+### Phase 5 — Single-file build
 
-- [ ] Add a build that inlines everything into one `.html`: base64-inline the WASM (~215 KB -> ~287 KB)
-      and convert the module worker to a blob URL.
-- [ ] Attach it to GitHub Releases so a server admin can download one file and double-click it.
+- [x] One self-contained `.html` (`npm run build:single` → `web/dist-single/valheim-cheat-radar.html`):
+      CSS, bundle, module worker, and the base64 WASM are all inlined. The worker became a
+      `data:text/javascript` URL rather than a blob one: a real-browser check showed a `blob:`
+      **module** worker is refused from a `file://` page while a `data:` module worker runs, and the
+      worker's WASM lookup therefore resolves an absolute `data:application/wasm` URL. The script
+      fails loudly if Vite's output shape drifts, and the deploy workflow runs it on every push.
+      Verified by opening the built file from `file://` and scanning a save end-to-end.
+- [x] Attached to GitHub Releases (`v0.1.0`), so a server admin can download one file and open it.
 
 ## Open items
 
 **A. Destination path — resolved.** The directory used is `D:\code\valheim-cheat-radar` (the plan
 initially said `D:\code\valheim\valheim-cheat-radar`). Everything ran from there.
 
-**B. Where the single-file build ships.** Phase 3 option (c) said Pages should "compile down to a
-single file at some point (maybe in releases?)". Reading it as: Pages serves the normal bundle now,
-and the single file becomes a **release artifact**. If instead Pages should eventually serve the
-single file itself, Phase 4 changes (deploy the inlined HTML as `index.html`).
+**B. Where the single-file build ships — resolved.** Pages keeps serving the normal bundle; the
+single file ships as a **release artifact** (`v0.1.0` and later), which matches decision 3(c).
 
 **C. Attribution nuance.** `pi-agent@users.noreply.github.com` is not registered to any GitHub
 account, so commits will display as an unlinked author named `pi-agent` rather than being attributed
