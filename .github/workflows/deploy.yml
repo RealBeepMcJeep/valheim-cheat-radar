@@ -22,7 +22,10 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  # Release builds and site deploys must not cancel each other: a docs push
+  # should not kill an asset upload, and a tag build should not kill a deploy.
+  # Keyed by tag, so two different releases stay independent too.
+  group: ${{ inputs.tag || github.event.release.tag_name || 'pages' }}
   cancel-in-progress: true
 
 jobs:
@@ -30,6 +33,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Build that tag itself, not whatever main has become since.
+          ref: ${{ inputs.tag || github.event.release.tag_name || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
