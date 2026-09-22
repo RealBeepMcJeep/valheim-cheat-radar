@@ -1,5 +1,6 @@
 import { Decompress } from 'fzstd';
 import init, { BrowserScanner } from '../wasm/pkg/valheim_backup_cheat_scanner.js';
+import { errorMessage } from './errors';
 import { MAX_DECOMPRESSED_BYTES, MAX_FILE_BYTES, type FailedFile, type FinalReport, type ScanProgress, type WorkerRequest, type WorkerResponse, type WorkerResponseBody } from './scan';
 
 const COMPRESSED_CHUNK_BYTES = 1024 * 1024;
@@ -87,10 +88,6 @@ async function report(id: number, failures: FailedFile[]): Promise<void> {
   } catch (error: unknown) {
     post(id, { type: 'error', message: errorMessage(error) });
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'Scanner worker failed.';
 }
 
 function decompressStreaming(buffer: ArrayBuffer, id: number): ArrayBuffer {

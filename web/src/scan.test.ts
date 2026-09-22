@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { errorMessage } from './errors';
 import { ScannerWorkerClient, ScanCancelledError, type ScannerWorkerLike, type WorkerRequest, type WorkerResponse } from './scan';
 
 class FakeWorker implements ScannerWorkerLike {
@@ -74,5 +75,13 @@ describe('ScannerWorkerClient', () => {
     client.cancel();
     await expect(pending).rejects.toBeInstanceOf(ScanCancelledError);
     expect(worker.terminated).toBe(true);
+  });
+
+  it('keeps wasm-bindgen string errors and only falls back when there is nothing to show', () => {
+    expect(errorMessage('tar checksum mismatch')).toBe('tar checksum mismatch');
+    expect(errorMessage(new Error('scan failed'))).toBe('scan failed');
+    expect(errorMessage(undefined)).toBe('Scanner worker failed.');
+    expect(errorMessage(42)).toBe('Scanner worker failed.');
+    expect(errorMessage({})).toBe('Scanner worker failed.');
   });
 });
