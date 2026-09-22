@@ -73,45 +73,62 @@ Corrected order — the scrub happens **before** the first commit, so nothing le
 ### Phase 0 — Stage the destination
 
 - [x] Create `D:\code\valheim-cheat-radar`.
-- [ ] Copy the working tree **without `.git`** (fresh history means the old history is discarded).
-- [ ] Copy local-only data the CLI needs: archives, `character-saves/`, `reports-rust/`.
-- [ ] Skip regenerables: `target/`, `node_modules/`, `.tools/`, `web/dist/`, `.pi/`.
+- [x] Copy the working tree **without `.git`** (fresh history means the old history is discarded).
+- [x] Copy local-only data the CLI needs: archives, `character-saves/`, `reports-rust/`.
+- [x] Skip regenerables: `target/`, `node_modules/`, `web/dist/`, `.pi/`; `_bench/` (scratch
+      benchmarks) also stayed behind. `.tools/wasm-pack` (5 MB) was copied so `npm run wasm:build`
+      keeps working offline.
 
 ### Phase 1 — Scrub (before any commit)
 
-- [ ] Untrack `reports-rust/`; add to `.gitignore`; keep the files locally.
-- [ ] Strip player/character names from `CHANGELOG.md`, `TODO.md`, and any fixture.
-- [ ] Remove the five mockup HTMLs from the working tree (they embed the audit); they remain in the
-      old directory.
-- [ ] `src/lib.rs`: keep generic structural invariants in `--validate`; move world-specific
-      expectations into a local, gitignored fixture the CLI reads when present.
-- [ ] `src/lib.rs`: remove the hard-coded delta sentence from the Markdown report generator.
-- [ ] Prove the scrub: grep the whole tree for player names, Steam IDs, the archive ID, and the base
-      coordinates. Expect zero hits outside gitignored local data.
+- [x] Untrack `reports-rust/`; add it to `.gitignore`; keep the files locally. `character-saves/`,
+      `*.tar.zst`, and the new `oracle.local.txt` are ignored for the same reason.
+- [x] Strip player/character names: `CHANGELOG.md` was rewritten generically, `TODO.md` updated, and
+      `FORMAT.md` lost its hard-coded snapshot list.
+- [x] Remove the five mockup HTMLs from the working tree (they embed the audit); they remain in the
+      old directory. Their generator in `tools/` went with them.
+- [x] `src/lib.rs`: `--validate` keeps generic structural invariants; world-specific expectations
+      moved to a local, gitignored fixture read via `--oracle FILE` (or `oracle.local.txt` beside the
+      archives when present).
+- [x] `src/lib.rs`: the hard-coded delta sentence, the world-specific narrative, and the hard-coded
+      snapshot labels for delta status and the consolidated table are gone; those now derive from the
+      scanned archives, and the CSV header set follows them.
+- [x] Prove the scrub: zero hits in the tree *and* in history for player names, Steam IDs, world and
+      archive IDs, evidence-count fingerprints, and all 570 distinct coordinate values taken from the
+      real `world-evidence.csv`.
 
 ### Phase 2 — Fresh repository
 
-- [ ] `git init` in the new directory.
-- [ ] Confirm authorship is `pi-agent` **before** the first commit (env vars are live only after a pi
-      restart — verify with `git var GIT_AUTHOR_IDENT`).
-- [ ] Initial commit.
-- [ ] Verify from the new location: `cargo test --release`, `cargo fmt --check`,
-      `cargo clippy --release -- -D warnings`, `cd web && npm ci && npm test && npm run build`.
+- [x] `git init` in the new directory.
+- [x] Confirm authorship is `pi-agent` **before** the first commit (`git var GIT_AUTHOR_IDENT` and
+      `GIT_COMMITTER_IDENT` both reported `pi-agent <pi-agent@users.noreply.github.com>`).
+- [x] Initial commit `2c22859` — 42 files.
+- [x] Verify from the new location: `cargo fmt --check`, `cargo test --release` (24 passing),
+      `cargo clippy --release -- -D warnings`, and in `web/`: `npm ci`, `npm test` (29 passing),
+      `npm run build`. The shipped `web/wasm/pkg` was regenerated from the scrubbed sources and
+      re-checked for stale strings.
 
 ### Phase 3 — Publish
 
-- [ ] `gh repo create RealBeepMcJeep/valheim-cheat-radar --public --source . --push`.
-- [ ] Confirm the remote file list contains no save-derived file.
+- [x] `gh repo create RealBeepMcJeep/valheim-cheat-radar --public --source . --push`.
+- [x] Confirm the remote file list contains no save-derived file (0 matches for `*.tar.zst`, `*.fch`,
+      `reports-rust/`, `character-saves/`, `oracle.local.txt`).
 
 ### Phase 4 — CI and Pages
 
-- [ ] Workflow: Rust + `wasm32-unknown-unknown` + `wasm-pack`, `npm ci`, `npm run wasm:build`,
-      `npm run build`, then `actions/deploy-pages`. Requires `workflow` scope (confirmed present).
-- [ ] Deploy to the **project** site only: `https://realbeepmcjeep.github.io/valheim-cheat-radar/`.
-- [ ] Add `.nojekyll` so the asset directory is served verbatim.
-- [ ] Vite already uses `base: './'`, so subpath hosting needs no change.
-- [ ] Verify: deployed site loads its WASM and parses a save; `https://realbeepmcjeep.github.io/`
-      is unchanged.
+- [x] Workflow: Rust + `wasm32-unknown-unknown` + `wasm-pack`, `npm ci`, `npm test`,
+      `npm run wasm:build`, `npm run build`, then `actions/deploy-pages`.
+- [x] Deploy to the **project** site only: `https://realbeepmcjeep.github.io/valheim-cheat-radar/`
+      (repo Pages set to `build_type: workflow`).
+- [x] `.nojekyll` is written into `dist/` by the workflow so the asset directory is served verbatim.
+- [x] Vite already uses `base: './'`, so subpath hosting needed no change.
+- [x] Verify on the deployed site: the WASM asset is served as `application/wasm`; a synthetic
+      legacy-v37 save injected through the page parsed end-to-end and reported
+      `archives=synthetic-valid.tar:legacy_v37:zdo=0` with `tool=Valheim Cheat Radar`; and
+      `https://realbeepmcjeep.github.io/` is byte-for-byte unchanged
+      (sha256 `497f6871…f3f7a6`, repo HEAD still `6fa6aaa4`). Live verification also found and fixed
+      a real defect: the worker masked wasm-bindgen's string errors (`74e7a8c`), so a rejected save
+      now shows the parser's actual message.
 
 ### Phase 5 — Single-file build (deferred)
 
@@ -121,9 +138,8 @@ Corrected order — the scrub happens **before** the first commit, so nothing le
 
 ## Open items
 
-**A. Preconditions for the handoff.** The next session is meant to run *from*
-`D:\code\valheim\valheim-cheat-radar`, but that directory does not exist yet. Either the owner
-creates it first, or the handoff prompt must be run from the old directory and perform Phase 0 itself.
+**A. Destination path — resolved.** The directory used is `D:\code\valheim-cheat-radar` (the plan
+initially said `D:\code\valheim\valheim-cheat-radar`). Everything ran from there.
 
 **B. Where the single-file build ships.** Phase 3 option (c) said Pages should "compile down to a
 single file at some point (maybe in releases?)". Reading it as: Pages serves the normal bundle now,
@@ -134,3 +150,10 @@ single file itself, Phase 4 changes (deploy the inlined HTML as `index.html`).
 account, so commits will display as an unlinked author named `pi-agent` rather than being attributed
 to `RealBeepMcJeep`. That matches "specific to the pi agent"; say the word if you want them linked to
 your account instead.
+
+**D. Licensing — owner's call, deliberately deferred.** The repository has no `LICENSE`, which means
+all rights reserved by default. `Cargo.toml` therefore also has no `license`/`repository` fields.
+
+**E. Local-only follow-ups.** `oracle.local.txt` (gitignored) carries the archive sweep expectations
+for this save set, so `cargo run --release -- --validate` still checks real counts locally; a redacted
+sample save would let the same happen for anyone else.

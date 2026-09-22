@@ -8,9 +8,10 @@ Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `pla
       outside the repository: `reports-rust/`, `*.tar.zst`, `character-saves/`, and the optional
       `oracle.local.txt` fixture are all gitignored. The report generators and `--validate` no longer
       assert one world's numbers or read one hard-coded set of snapshot labels.
-- [ ] Publish the public GitHub repo and deploy the built site to
-      `realbeepmcjeep.github.io/valheim-cheat-radar/` (never the user-site repo), then confirm the
-      deployed site loads its WASM and parses a save.
+- [x] Publish the public GitHub repo and deploy the built site to
+      `realbeepmcjeep.github.io/valheim-cheat-radar/` (never the user-site repo). Verified live: the
+      deployed WASM parses a synthetic legacy-v37 save end-to-end, and the user site is byte-for-byte
+      unchanged.
 - [ ] Add redacted sample saves/fixtures so the tool can be demonstrated without real save data.
 
 ## Verify the audit
