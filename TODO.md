@@ -58,8 +58,8 @@ Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `pla
       the list. Chunk grouping itself is unsuitable — one chunk spans ~14 distinct sites and splits
       ~10% of true 30 m neighbours.
 - [ ] Broader browser compatibility coverage.
-- [ ] Attach the single-file build to a release automatically on tag push (today it is one documented
-      `gh release create … dist-single/valheim-cheat-radar.html` command).
+- [x] Attach the single-file build automatically: publishing a release (or dispatching the workflow
+      with a `tag` input) builds that tag and uploads `valheim-cheat-radar.html` to the release.
 
 ## Map: making it a *terrain* map
 

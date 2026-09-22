@@ -139,7 +139,9 @@ Corrected order — the scrub happens **before** the first commit, so nothing le
       worker's WASM lookup therefore resolves an absolute `data:application/wasm` URL. The script
       fails loudly if Vite's output shape drifts, and the deploy workflow runs it on every push.
       Verified by opening the built file from `file://` and scanning a save end-to-end.
-- [x] Attached to GitHub Releases (`v0.1.0`), so a server admin can download one file and open it.
+- [x] Attached to GitHub Releases (`v0.1.0`), so a server admin can download one file and open it —
+      automatically now: publishing a release builds that tag and uploads the file to it, and release
+      runs are keyed to their own concurrency group so a docs push cannot cancel an asset upload.
 
 ## Open items
 

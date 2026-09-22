@@ -27,13 +27,17 @@ npm run wasm:build
 npm run build
 ```
 
-Build the single-file download that is attached to GitHub Releases:
+Build the single-file download locally (releases get it automatically):
 
 ```text
 cd web
 npm run build:single   # writes dist-single/valheim-cheat-radar.html
-gh release create v0.1.0 --title v0.1.0 --notes "…" dist-single/valheim-cheat-radar.html#valheim-cheat-radar.html
 ```
+
+Publishing a release triggers the `Build and publish` workflow, which builds that tag and uploads
+`valheim-cheat-radar.html` to the release. To re-attach an asset without creating a release, run the
+workflow manually with its `tag` input; run it with no input to just (re)deploy the site. Release
+builds and site deploys use separate concurrency groups, so neither can cancel the other.
 
 `dist-single/valheim-cheat-radar.html` is one self-contained file: CSS, bundle, module worker, and the WASM (base64) are all inlined, so it works when opened directly from disk. Two browser facts shape that build, both verified in a real browser: a `blob:` **module** worker is refused from a `file://` page while a `data:` module worker runs, and the worker therefore resolves the WASM from a `data:application/wasm` URL rather than a relative path. `web/scripts/build-single-file.mjs` fails loudly if Vite's output shape changes instead of emitting a broken file, and the deploy workflow runs it on every push so drift surfaces immediately.
 
