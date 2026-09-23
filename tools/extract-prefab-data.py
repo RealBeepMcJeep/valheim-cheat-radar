@@ -178,7 +178,14 @@ def resolve_scene(
 
     env = UnityPy.load(str(scene))
     dependencies, references = scene_references(env)
-    print(f"scene {scene.name}: {len(references)} biome references across {len(dependencies)} dependencies")
+    # `m_FileID` indexes the *serialized file's* external table, whose order is not the same as the
+    # AssetBundle's dependency list (they disagree in practice), so read the file's own externals.
+    first = next(iter(env.objects), None)
+    externals = list(getattr(first.assets_file, "externals", None) or []) if first is not None else []
+    print(
+        f"scene {scene.name}: {len(references)} biome references; "
+        f"{len(externals)} external files, {len(dependencies)} bundle dependencies"
+    )
 
     # Group the references by the bundle that actually holds the prefab, so each loads once.
     by_bundle: dict[str, set[int]] = collections.defaultdict(set)
@@ -188,26 +195,32 @@ def resolve_scene(
         if file_id == 0:
             bundle_file = scene.name
         else:
-            dependency = dependencies[file_id - 1] if 0 < file_id <= len(dependencies) else None
-            bundle_file = cab_index.get(dependency.lower()) if dependency else None
+            bundle_file = None
+            if 0 < file_id <= len(externals):
+                match = re.search(r"(CAB-[0-9a-fA-F]+)", str(externals[file_id - 1]))
+                if match:
+                    bundle_file = cab_index.get(match.group(1).lower())
             if not bundle_file:
                 missing_files += 1
                 continue
         by_bundle[bundle_file].add(path_id)
-        bits_by_ref[(bundle_file, path_id)] |= bits
+        bits_by_ref[(bundle_file, path_id & 0xFFFFFFFFFFFFFFFF)] |= bits
 
     resolved: dict[tuple[str, int], str] = {}
+    # Path ids are signed in the scene's typetree but may come back unsigned from a bundle, so compare
+    # them masked to 64 bits rather than by Python value.
     for bundle_file, path_ids in by_bundle.items():
         try:
             holder = UnityPy.load(str(bundles / bundle_file))
         except Exception as cause:
             print(f"  ! {bundle_file}: {cause}", file=sys.stderr)
             continue
+        wanted = {path_id & 0xFFFFFFFFFFFFFFFF for path_id in path_ids}
         for obj in holder.objects:
-            if obj.type.name == "GameObject" and obj.path_id in path_ids:
+            if obj.type.name == "GameObject" and (obj.path_id & 0xFFFFFFFFFFFFFFFF) in wanted:
                 name = read_name(obj)
                 if name:
-                    resolved[(bundle_file, obj.path_id)] = name
+                    resolved[(bundle_file, obj.path_id & 0xFFFFFFFFFFFFFFFF)] = name
     print(f"resolved {len(resolved)}/{len(bits_by_ref)} referenced prefabs ({missing_files} refs had no bundle)")
 
     added = 0

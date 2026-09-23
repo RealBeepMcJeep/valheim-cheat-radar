@@ -144,6 +144,7 @@ Hildir_camp	meadows,swamp
 Hildir_cave	mountain
 Hildir_crypt	blackforest
 Hildir_plainsfortress	plains
+HugeStone1	plains
 Hugintest	meadows
 Hut Swamp	swamp
 InfestedTree01	swamp
@@ -338,6 +339,7 @@ Volture	ashlands
 VoltureNest	ashlands
 Waymarker01	mountain
 Waymarker02	mountain
+Waystone	meadows,plains
 Wolf	mountain
 Wolf Mountain	mountain
 WoodFarm1	meadows
@@ -516,6 +518,7 @@ ice1_deepnorth	deepnorth
 ice_rock1_deepnorth	deepnorth
 icepond	deepnorth
 icerock	deepnorth
+instanced_small_rock1	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 lantern	deepnorth
 large_bones	mistlands,plains,swamp
 large_bones_half01	mistlands,plains,swamp
@@ -537,6 +540,7 @@ mushroom_magecap	mistlands
 oak1_meadows	meadows
 oak2_meadows	meadows
 oldLog	deepnorth
+ormbunke_green_medium	meadows
 ormbunke_meadows	meadows
 pickable_barley_heath	plains
 pickable_bog_swamp	swamp
@@ -610,6 +614,7 @@ rock_4_mistlands	mistlands
 rock_4_plains	plains
 rock_4_swamp	swamp
 rock_7_meadows	meadows,plains
+rock_a	plains
 rock_a_heath	plains
 rock_ashlands1	ashlands
 rock_ashlands2	ashlands

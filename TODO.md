@@ -162,8 +162,26 @@ There is no biome estimate, and nothing stores per-cell prefab composition.
       bundles: crypts/greydwarf camps → blackforest, graves → swamp, drake nests → mountain, goblin
       camps → plains, wolves → mountain, serpents → ocean, flax/barley saplings → plains. The full
       799-bundle sweep produces the committed tables next.
-- [ ] Expand `prefab_names.txt` (56 names today) from the same extraction, so names stop rendering as
-      `<unknown>` everywhere, not just on the map.
+- [x] Expand `prefab_names.txt` from the same extraction: 56 names → **31,601**, so `<unknown>` mostly
+      disappears everywhere, not just on the map (712 KB raw, 136 KB gzipped).
+- [ ] **Trees/plants are still untagged** (meadows reads low because of it). Progress and the exact
+      wall hit on 2026-09-23:
+      - The biome of flora lives on the scene's `ZoneSystem` entries, which point at prefabs in other
+        bundles.
+      - `m_FileID` indexes the **serialized file's externals**, *not* the AssetBundle dependency list —
+        the two tables list the same bundles in different orders (externals[3] = `CAB-8923bd83` =
+        bundle `c4210710`, while dependencies[2] = `CAB-cbd1a622` = an unrelated 480-object bundle).
+        Fixed, and `--index-cabs` + `--resolve-scene` now implement it.
+      - Path ids may be signed in the scene's typetree and unsigned from a bundle, so they are compared
+        masked to 64 bits. Fixed.
+      - Still only 5 of 112 references resolve: a direct probe *does* find the target
+        (`m_clutter[0]` → `instanced_meadows_grass`, path id -3552536447561850049, in `c4210710`), yet the
+        same lookup inside `resolve_scene` misses it. So the remaining bug is in that function's
+        ref-walk or its grouping — next step is to print `{bundle: len(ids)}` and a few
+        `(file_id, externals[file_id-1], path_id, found?)` tuples from inside it.
+      - The 5 that do resolve are real: `HugeStone1` → plains, `Waystone` → meadows,plains,
+        `ormbunke_green_medium` → meadows, `rock_a` → plains.
+
 - [x] Classify a cell only with enough evidence (≥3 single-biome objects' worth of weight) and a 60%
       share; otherwise leave it uncoloured — undeveloped, ocean and unexplored cells stay blank rather
       than be guessed. Implemented as `biome_verdict`; a cell popup with the counts behind the verdict
