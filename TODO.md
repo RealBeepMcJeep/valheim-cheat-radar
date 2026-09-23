@@ -2,6 +2,29 @@
 
 Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `plans/`.
 
+## Focus (owner, 2026-09-23)
+
+- The **standalone single-page web app** is the priority. Save parsing stays in Rust (that is where it
+  is efficient and already shared by native and WASM); the CLI keeps working and nothing existing gets
+  removed, but CSV/Markdown report polish is no longer a priority.
+- Biomes on the map: content-based inference (a+b below) is wanted ASAP; the accurate seed/minimap path
+  is explicitly deferred.
+
+## Character backup convention
+
+Active profile plus its lineage is copied from the Steam Cloud profile directory
+(`…\Steam\userdata\<id>\892970\remote\characters`) into
+`C:\Users\user\Downloads\valheim-backups2\character-saves\`, and one date-prefixed snapshot per save
+(`<YYYY-MM-DD>__<original name>`) goes into `character-saves\history\`. Scanning the history as a
+timeline is what exercises profile reading over time:
+
+```text
+cargo run --release -- --archive-dir C:\Users\user\Downloads\valheim-backups2 `
+  --prefab-names prefab_names.txt `
+  --character      C:\Users\user\Downloads\valheim-backups2\character-saves\mustarðsmaðr.fch `
+  --character-history-dir C:\Users\user\Downloads\valheim-backups2\character-saves\history
+```
+
 ## Now — public release preparation
 
 - [x] **Scrubbed save-derived data.** Real reports, character saves, and archives stay on disk
@@ -74,20 +97,41 @@ Working data for these checks lives outside the repository at
 - [x] Attach the single-file build automatically: publishing a release (or dispatching the workflow
       with a `tag` input) builds that tag and uploads `valheim-cheat-radar.html` to the release.
 
-## Map: making it a *terrain* map
+## Map: biomes from content (wanted ASAP)
 
+Current state: the map draws ZDO *density* per 64 m cell in one amber layer, plus evidence markers.
+There is no biome estimate, and nothing stores per-cell prefab composition.
+
+- [ ] Record, per 64 m cell, a weighted tally of classified prefab biome evidence during parsing (the
+      same loop that already builds the density grid), so no second pass over the world is needed.
+- [ ] Generate a committed `prefab_biomes.txt` (prefab name → biome) from the decompiled game data,
+      with a documented generator, mirroring `prefab_names.txt`. Game data, not save data.
+- [ ] Expand `prefab_names.txt` (56 names today) from the same extraction, so names stop rendering as
+      `<unknown>` everywhere, not just on the map.
+- [ ] Classify a cell only with enough evidence (e.g. ≥3 classified objects and a dominant share);
+      otherwise leave it uncoloured — undeveloped, ocean and unexplored cells must stay blank rather
+      than be guessed, and the cell popup should show the counts behind the verdict.
+- [ ] Render biome fill plus density shading with a view control (Biome / Density / Both) and a legend,
+      with one colour per biome (meadow green, black forest darker green, mountain white/grey, plains
+      tan, swamp murky green, ashlands dark red, mistlands purple-grey, ocean deep blue).
 - [ ] Cluster or spiderfy markers in the map view: a dense base stacks dozens of rings on one spot,
       which is clickable but unreadable at a glance.
 - [ ] Give the ZDO-density layer an intensity gradient plus a metric scale/grid, so a hotspot reads as
       a hotspot and its coordinates can be matched against the in-game map.
+- [ ] Measure on the real archives before trusting the layer: share of ZDO hashes classified, share of
+      populated cells that get a verdict, and a spot check that unambiguous cells agree (silver ore →
+      mountain, flax/barley → plains, crypt → swamp).
+
+## Map: terrain from the seed / client cache (deferred by the owner)
 
 Terrain is not stored in a save; the in-game map is generated procedurally from the seed by the game's
-world generator, and the client caches the result locally as gzip'd 2048² RGBA. Options if wanted later:
+world generator, and the client caches the result locally as gzip'd 2048² RGBA. Deferred in favour of
+content inference above:
 
 - [ ] Optional overlay of the user's own local `cacheMinimapBiome` (gzip'd RGBA, decodable with the
       browser's built-in `DecompressionStream`). Requires calibrating `m_pixelSize`, which is serialized
       in a Unity prefab and not present in the decompiled source.
-- [ ] Estimate biome bounds from prefab distributions once the full prefab name table exists.
+- [ ] Or run the generator from the parsed seed (`world_seed` is now reported) for the true biome map.
 
 ## Safe save scrubbing
 
