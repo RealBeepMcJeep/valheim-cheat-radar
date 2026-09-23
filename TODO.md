@@ -194,6 +194,19 @@ There is no biome estimate, and nothing stores per-cell prefab composition.
         same lookup inside `resolve_scene` misses it. So the remaining bug is in that function's
         ref-walk or its grouping — next step is to print `{bundle: len(ids)}` and a few
         `(file_id, externals[file_id-1], path_id, found?)` tuples from inside it.
+      - **Game-data route exhausted (2026-09-23).** The scene's `file_id` → cab mapping resolves the
+        107 vegetation references to a bundle (`9fe0899c`) that holds **only Sprites/Textures** (247
+        sprites, 9 textures, 1 atlas, no externals), and no bundle named after that cab (`6940c115…`)
+        exists in either the client's 799 or the server's 798 bundles. So this build's scene references
+        prefab content the shipped bundles no longer carry. Note the earlier "found it" was a false
+        positive: path ids are unique only *within* a file, and the id I matched existed in a different
+        bundle by coincidence.
+      - Options, in order of preference: (a) a small, explicitly-labelled **curated flora hint table**
+        (`name pattern → biome`, ~15 rules: Fir/Pine → blackforest, Beech/Birch → meadows, Oak →
+        meadows/plains, VineAsh → ashlands, …) used *only* where the game table is silent; (b) obtain a
+        matching-game-version bundle set or a community prefab→biome dataset; (c) leave trees untagged
+        (honest, keeps the meadows skew). Spatial smoothing from neighbouring cells is deliberately not
+        on the list: inference on inference.
       - The 5 that do resolve are real: `HugeStone1` → plains, `Waystone` → meadows,plains,
         `ormbunke_green_medium` → meadows, `rock_a` → plains.
 
