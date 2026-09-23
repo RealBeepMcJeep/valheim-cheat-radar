@@ -1,0 +1,681 @@
+# <prefab name><TAB><biome>[,<biome>...] — extracted from the game's bundles by
+# tools/extract-prefab-data.py. Cells are coloured from these; see README.md.
+AbandonedLogCabin02	mountain
+AbandonedLogCabin03	mountain
+AbandonedLogCabin04	mountain
+Abomination	swamp
+Abomination Swamp	swamp
+AncientUpgradeStation	mountain
+AshlandRuins	ashlands
+Ashlands Ocean	ocean
+Ashlands grass long	ashlands
+Ashlands grass short	ashlands
+Barka	deepnorth
+Bat	swamp
+Bat Swamp	swamp
+BearCave	blackforest
+BigRockClearing	blackforest
+Birch Meadows	meadows
+Bjorn DAY	blackforest
+Bjorn NIGHT	blackforest
+Blob	swamp
+BlobElite	swamp
+Blueberry Black Forest	blackforest
+Boar	meadows
+Boars	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Bog Swamp	swamp
+BogWitch_Camp	swamp
+Bonemass	swamp
+Bonemaw Serpent	ashlands
+Bones	mistlands,plains,swamp
+Boss	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+BroodSwarm Mistlands	mistlands
+Broods	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Charred Archer	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Charred Melee	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Charred Spawner	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+CharredFortress	ashlands
+CharredRuins1	ashlands
+CharredRuins2	ashlands
+CharredRuins3	ashlands
+CharredRuins4	ashlands
+CharredStone_Spawner	ashlands
+CharredTowerRuins1	ashlands
+CharredTowerRuins1_dvergr	ashlands
+CharredTowerRuins2	ashlands
+CharredTowerRuins3	ashlands
+CinderSky Ashrain	ashlands
+CinderSky CinderRain	ashlands
+CinderSky Storm	ashlands
+CombatRuin01	meadows
+Crypt2	blackforest
+Crypt3	blackforest
+Crypt4	blackforest
+DN_gammeltrollFrac01	deepnorth
+DN_gammeltrollFrac02	deepnorth
+Dandelion Meadows	meadows
+Dark Meadows	meadows
+Death Plains	plains
+Deathsquito	plains
+Deep North brush	deepnorth
+Deep North brush short	deepnorth
+Deep north	deepnorth
+DevWallAsh	ashlands
+Dolmen01	blackforest,meadows
+Dolmen02	blackforest,meadows
+Dolmen03	blackforest,meadows
+Dragonqueen	mountain
+Drake Mountain	mountain
+DrakeLorestone	mountain
+DrakeNest01	mountain
+Draugr	blackforest,meadows,mountain,plains
+Draugr Elite	swamp
+Dverger	ashlands,mistlands
+Eikthyrnir	meadows
+Elaking	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Elaking Mole	deepnorth
+Elakingar Lantern NIGHT	deepnorth
+Elakingar NIGHT	deepnorth
+FaderLocation	ashlands
+Fallen Valkyrie	ashlands
+Feastings	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Fenring	mountain
+Fimbulvinter - Elakingar	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Fimbulvinter - Jotun Warriors	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Fimbulvinter - Jotun Witches	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Fimbulvinter - Meteors	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+FireFlies	blackforest
+FireHole	swamp
+Fish1	blackforest,meadows,plains
+Fish10	deepnorth
+Fish11	ashlands
+Fish12	mistlands,ocean
+Fish2	blackforest,meadows,plains
+Fish3	ocean
+Fish5	blackforest
+Fish6	swamp
+Fish7	plains
+Fish8	ocean
+Fish9	mistlands
+Forest	blackforest,meadows
+Fortress Mountain	mountain
+FortressRuins	ashlands
+Frozen GD	deepnorth
+Frozen GD shaman	deepnorth
+Frozen Skeleton	deepnorth
+FrozenShip01	deepnorth
+FrozenShip02	deepnorth
+FrozenShip03	deepnorth
+GDKing	blackforest
+Gemgoblins	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,plains,swamp
+Ghosts	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Giant Troll	deepnorth
+Gjall	mistlands
+Gjalls	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Goblin	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Goblin Plains	plains
+Goblin brute	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Goblin shaman	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+GoblinBrute	plains
+GoblinCamp1	plains
+GoblinCamp2	plains
+GoblinCamp2_1	plains
+GoblinHut01	plains
+GoblinHut02	plains
+GoblinHut03	plains
+GoblinKing	plains
+Grave1	swamp
+Greydwarf	meadows
+Greydwarf Elite	meadows
+Greydwarf Shaman	blackforest,meadows
+Greydwarf_Surprise	blackforest
+Greydwarf_camp1	blackforest
+Greydwarf_camp2	blackforest
+Greydwarf_camp3	blackforest
+Greydwarf_root1	blackforest
+Greyling	meadows
+HalfBurried_ForestCrypt	blackforest
+Hare	mistlands
+Hare Mistlands	mistlands
+Hare2	mistlands
+Hatchling	mountain
+Hatchlings	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Hildir_camp	meadows,swamp
+Hildir_cave	mountain
+Hildir_crypt	blackforest
+Hildir_plainsfortress	plains
+Hugintest	meadows
+Hut Swamp	swamp
+InfestedTree01	swamp
+Jotun Melee Patrol	deepnorth
+Jotun Witch Patrol	deepnorth
+JotunWarrior	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Kale	deepnorth
+Kalhygge Black Forest	blackforest
+Lantern	blackforest,deepnorth,meadows,mistlands,mountain,plains,swamp
+Lava Blob	ashlands
+Lava Rock	ashlands
+Leech	swamp
+LeviathanLava	ashlands
+Lingonberries	deepnorth
+Lox	plains
+Lox Plains	plains
+Lumbercamp	deepnorth
+Marsh draugr	swamp
+Marsh ormbunke	swamp
+Marsh surtling	swamp
+Menhir	meadows,plains
+Meteor	ashlands
+Minion	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Minion Strong	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Mist area	mistlands
+Mist area _edge	mistlands
+Mistlands_DvergrBossEntrance1	mistlands
+Mistlands_DvergrTownEntrance1	mistlands
+Mistlands_DvergrTownEntrance2	mistlands
+Mistlands_Excavation1	mistlands
+Mistlands_Excavation2	mistlands
+Mistlands_Excavation3	mistlands
+Mistlands_Giant1	mistlands
+Mistlands_Giant2	mistlands
+Mistlands_GuardTower1_new	mistlands
+Mistlands_GuardTower1_ruined_new	mistlands
+Mistlands_GuardTower1_ruined_new2	mistlands
+Mistlands_GuardTower2_new	mistlands
+Mistlands_GuardTower3_new	mistlands
+Mistlands_GuardTower3_ruined_new	mistlands
+Mistlands_Harbour1	mistlands
+Mistlands_Lighthouse1_new	mistlands
+Mistlands_RoadPost1	mistlands
+Mistlands_RockSpire1	mistlands
+Mistlands_Statue1	mistlands
+Mistlands_Statue2	mistlands
+Mistlands_StatueGroup1	mistlands
+Mistlands_Swords1	mistlands
+Mistlands_Swords2	mistlands
+Mistlands_Swords3	mistlands
+Mistlands_Viaduct1	mistlands
+Mistlands_Viaduct2	mistlands
+MorgenHole1	ashlands
+MorgenHole2	ashlands
+MorgenHole3	ashlands
+MountainCave01	mountain
+MountainCave02	deepnorth,mountain
+MountainGrave01	mountain
+MountainWell1	mountain
+Mushroom	blackforest,meadows
+Neck IN RAIN	meadows
+Neck lakes	meadows
+Necks	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+NorthMemorialPlace	deepnorth
+NorthVillage	deepnorth
+ODIN	blackforest,meadows,plains,swamp
+Peaceful Meadows	meadows
+Pillar1	blackforest
+Pillar2	blackforest
+Pinetree Black Forest	blackforest
+Pinetree_01_blackforest	blackforest
+Pinetree_01_mistlands	mistlands
+PlaceofMystery1	ashlands
+PlaceofMystery2	ashlands
+PlaceofMystery3	ashlands
+Raspberry Meadows	meadows
+Rock Black Forest	blackforest
+Rockless Mistlands	mistlands
+Root	blackforest
+Root Black Forest	blackforest
+Ruin Black Forest	blackforest
+Ruin1	blackforest
+Ruin2	blackforest
+Ruin3	plains
+Runestone_Ashlands	ashlands,blackforest,deepnorth
+Runestone_BlackForest	blackforest
+Runestone_Boars	meadows
+Runestone_DeepNorth	deepnorth
+Runestone_Draugr	swamp
+Runestone_Greydwarfs	blackforest
+Runestone_Meadows	meadows
+Runestone_Mistlands	mistlands
+Runestone_Mountains	mountain
+Runestone_Plains	plains
+Runestone_Swamps	swamp
+Seagull	blackforest,meadows,ocean,plains
+Seal	deepnorth
+Seal pup	deepnorth
+Seeker	mistlands
+Seeker Brute	mistlands
+Seeker defeated queen other biomes	blackforest,meadows,mountain,plains,swamp
+SeekerBrood  defeated queen other biomes	mistlands
+SeekerBroodSwarm	mistlands
+SeekerBrutes	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Seekers	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Serpent	ocean
+Shadow People	deepnorth
+ShipSetting01	deepnorth,meadows
+ShipWreck01	blackforest,deepnorth,ocean,plains,swamp
+ShipWreck02	blackforest,ocean,plains,swamp
+ShipWreck03	blackforest,ocean,plains,swamp
+ShipWreck04	blackforest,ocean,plains,swamp
+Shipwreck02_DN	deepnorth
+Shipwreck_DN	deepnorth
+Skeleton	blackforest,meadows,mountain,plains,swamp
+Skeleton_meadows	meadows
+Skeleton_plains	plains
+Skeleton_poison	blackforest,meadows,mistlands,plains,swamp
+Smalltree Meadows	meadows
+StartTemple	meadows
+StoneCircle	meadows
+StoneGolem	mountain
+StoneHenge1	plains
+StoneHenge2	plains
+StoneHenge3	plains
+StoneHenge4	plains
+StoneHenge5	plains
+StoneHenge6	plains
+StoneHouse1	blackforest
+StoneHouse1_heath	plains
+StoneHouse2	blackforest
+StoneHouse2_heath	plains
+StoneHouse3	blackforest
+StoneHouse4	blackforest
+StoneHouse5	blackforest
+StoneHouse5_heath	plains
+StoneTower1	plains
+StoneTower2	plains
+StoneTower3	plains
+StoneTower4	plains
+StoneTowerRuins03	blackforest
+StoneTowerRuins04	mountain
+StoneTowerRuins05	mountain
+StoneTowerRuins05_leet	mountain
+StoneTowerRuins07	blackforest
+StoneTowerRuins07_sunk	blackforest
+StoneTowerRuins08	blackforest
+StoneTowerRuins08_sunk	blackforest
+StoneTowerRuins09	blackforest
+StoneTowerRuins09_sunk	blackforest
+StoneTowerRuins10	blackforest
+StoneTowerRuins10_sunk	blackforest
+StumpHole_small	deepnorth
+StumpHut	deepnorth
+StumpLog	deepnorth
+SulfurArch	ashlands
+SunkenCrypt1	swamp
+SunkenCrypt2	swamp
+SunkenCrypt3	swamp
+SunkenCrypt4	swamp
+Surtling	ashlands
+SwampHut1	swamp
+SwampHut1_1	swamp
+SwampHut2	swamp
+SwampHut2_1	swamp
+SwampHut3	swamp
+SwampHut3_1	swamp
+SwampHut4	swamp
+SwampHut5	swamp
+SwampRuin1	swamp
+SwampRuin2	swamp
+SwampWell1	swamp
+Swords Mistlands	mistlands
+TarPit1	deepnorth,plains
+TarPit2	plains
+TarPit3	plains
+Tick defeated queen other biomes	mistlands
+Trees Mistlands	mistlands
+Troll	blackforest
+Troll Black Forest	blackforest
+TrollCave	blackforest
+TrollCave02	blackforest
+Trolls	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Twilight_Clear	deepnorth
+Twilight_Snow	deepnorth
+Twilight_SnowStorm	deepnorth
+Twitchers	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Unbjorn	plains
+UnstableLavaRock	ashlands
+Vendor_BlackForest	blackforest
+Volture	ashlands
+VoltureNest	ashlands
+Waymarker01	mountain
+Waymarker02	mountain
+Wolf	mountain
+Wolf Mountain	mountain
+WoodFarm1	meadows
+WoodHouse1	meadows,plains
+WoodHouse10	meadows
+WoodHouse11	meadows
+WoodHouse12	meadows
+WoodHouse13	meadows
+WoodHouse2	meadows
+WoodHouse3	meadows
+WoodHouse4	meadows
+WoodHouse5	meadows
+WoodHouse6	meadows
+WoodHouse7	meadows
+WoodHouse8	meadows
+WoodHouse9	meadows
+WoodVillage1	meadows
+WoodVillage2	meadows
+Wraith	swamp
+Wraiths	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+Writhan	swamp
+YggaShoot1	mistlands
+YggaShoot2	mistlands
+YggaShoot3	mistlands
+YggaShoot4	mistlands
+YggaShoot_small1	mistlands
+YggaShoot_small2	mistlands
+YggaShoot_small3	mistlands
+_SpawnList_DeepNorth	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+_SpawnList_ashlands	ashlands,blackforest,meadows,mountain,plains,swamp
+_SpawnList_base	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+_SpawnList_mistlands	blackforest,meadows,mistlands,mountain,plains,swamp
+army_bonemass	blackforest,meadows,mountain,plains,swamp
+army_charred	ashlands,blackforest,deepnorth,mistlands,plains
+army_charredspawners	ashlands,blackforest,deepnorth,mistlands,plains
+army_eikthyr	blackforest,meadows
+army_elakingar	deepnorth
+army_gjall	mistlands
+army_goblin	blackforest,meadows,plains
+army_jotuns	blackforest,deepnorth,meadows,mistlands,mountain,plains,swamp
+army_moder	blackforest,meadows,mountain,plains,swamp
+army_seekers	ashlands,blackforest,deepnorth,mistlands,plains
+army_theelder	blackforest,meadows,plains,swamp
+ashstone	ashlands
+bat	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+bats	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+beech1_meadows	meadows
+beech2_meadows	meadows
+beech5_meadows	meadows
+beech_small1_many_meadows	meadows
+beech_small1_meadows	meadows
+beech_small2_many_meadows	meadows
+beech_small2_meadows	meadows
+beech_small3_meadows	meadows
+beech_small4_meadows	meadows
+birch1_aut_plains	plains
+birch1_meadows	meadows
+birch1_meadows2	meadows
+birch2_aut_heath	plains
+birch2_meadows	meadows
+birch2_meadows2	meadows
+blob	blackforest,meadows,plains,swamp
+blob elite	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+blobs	blackforest,meadows,plains,swamp
+blueberry_bush1	blackforest
+blueberrybush_blackforest	blackforest
+boar2	meadows
+boss_bonemass	blackforest,meadows,plains,swamp
+boss_eikthyr	blackforest,meadows,plains,swamp
+boss_fader	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+boss_frozenking	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+boss_gdking	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+boss_goblinking	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+boss_moder	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+boss_queen	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+bosslocation	deepnorth
+branch	deepnorth
+branch_ashlands1	ashlands
+branch_ashlands2	ashlands
+branch_ashlands3	ashlands
+bush	mistlands
+bush01	deepnorth
+bush01_heath	plains
+bush01_meadows	meadows
+bush02_en_heath	plains
+bush02_meadows	meadows
+bush_ashlands1	ashlands
+cliff_ashlands1	ashlands
+cliff_ashlands2	ashlands
+cliff_ashlands3	ashlands
+cliff_ashlands4	ashlands
+cliff_ashlands5	ashlands
+cliff_ashlands6	ashlands
+cliff_ashlands7	ashlands
+cliff_ashlands8	ashlands
+cliff_ashlands9	ashlands
+cliff_mistlands1	mistlands
+cliff_mistlands2	mistlands
+cliff_mistlands3	mistlands
+cliff_mistlands4	mistlands
+cloudberrybush_heath	plains
+crow_swamp	swamp
+darkesthole	deepnorth
+deepforest ormbunke	blackforest
+deer	blackforest,meadows
+deer2	meadows
+deerwhite	meadows
+dragur	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+elite	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+fimbulvinter	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+fir	mistlands
+fireflies	meadows
+firtree_blackforest	blackforest
+firtree_blackforest2	blackforest
+firtree_many_blackforest	blackforest
+firtree_mountain	mountain
+firtree_mountain2	mountain
+firtree_oldlog_blackforest	blackforest
+firtree_oldlog_meadows	meadows
+firtree_oldlog_swamp	swamp
+firtree_small_blackforest	blackforest
+firtree_small_blackforest2	blackforest
+firtree_small_dead_mistlands	mistlands
+firtree_small_dead_swamp	swamp
+firtree_small_many_blackforest	blackforest
+firtree_small_mountain	mountain
+flies_swamp	swamp
+forest groundcover	blackforest
+forest groundcover short brown	blackforest,mistlands
+forest ormbunke	meadows
+forest shrubs	meadows
+forest shrubs large	meadows
+foresttrolls	blackforest,meadows,plains,swamp
+frozenSkeleton1	deepnorth
+frozenSkeleton2	deepnorth
+frozengd	deepnorth
+gemgoblin	ashlands,blackforest,deepnorth,mistlands,plains
+ghosts	blackforest,meadows,mountain,plains,swamp
+ghostskull	blackforest
+giant_helmet1	mistlands
+giant_helmet2	mistlands
+giant_helmet3	mistlands
+giant_helmet4	mistlands
+giant_sword1	mistlands
+giant_sword1_sea	mistlands
+giant_sword2	mistlands
+giant_sword2_sea	mistlands
+giant_sword3	mistlands
+giant_sword4	mistlands
+glowingmushroom_mistlands	mistlands
+grass green	meadows
+grass green short	meadows
+greydwarf	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+greydwarf After boss	meadows
+greydwarf DAY	blackforest
+greydwarf ELITE	blackforest
+greydwarf ELITE 2	blackforest
+greydwarf Night	blackforest
+greylings	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+heath flowers	plains
+heath grass	plains
+heath grass green	plains
+heathrockpillar	plains
+hildirboss1	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+hildirboss2	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+hildirboss3	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+horizontal_web	mistlands
+hotspring	deepnorth
+hotspring2	deepnorth
+hotspring3	deepnorth
+hugeroot1	mistlands
+hugestone1_heath	plains
+hut01	deepnorth
+ice	deepnorth
+ice1_deepnorth	deepnorth
+ice_rock1_deepnorth	deepnorth
+icepond	deepnorth
+icerock	deepnorth
+lantern	deepnorth
+large_bones	mistlands,plains,swamp
+large_bones_half01	mistlands,plains,swamp
+large_bones_half02	mistlands,plains,swamp
+leviathan	ocean
+lost_lantern	blackforest,deepnorth,meadows,mistlands,mountain,plains,swamp
+meadows ormbunke	meadows
+meadows shrubs	meadows
+minerock_obsidian_mountain	mountain
+minerock_tin_blackforest	blackforest
+mistlands moss	mistlands
+mistlands rockplant	mistlands
+ml mist	mistlands
+morkborg	deepnorth
+mudpile_beacon	swamp
+mushroom_SmokePuff	ashlands
+mushroom_jotunpuffs	mistlands
+mushroom_magecap	mistlands
+oak1_meadows	meadows
+oak2_meadows	meadows
+oldLog	deepnorth
+ormbunke_meadows	meadows
+pickable_barley_heath	plains
+pickable_bog_swamp	swamp
+pickable_branch_meadows_blackforest_swamp	blackforest,meadows,swamp
+pickable_dandelion2	meadows
+pickable_dandelion3	meadows
+pickable_dandelion_meadows	meadows
+pickable_flint_meadows	meadows
+pickable_mushroom1	blackforest,meadows
+pickable_mushroom2	blackforest,meadows
+pickable_mushroom_meadows_blackforest_swamp	blackforest,meadows,swamp
+pickable_seedcarrot_blackforest	blackforest
+pickable_seedturnip_swamp	swamp
+pickable_stone_meadows_blackforest_heath_mountain	blackforest,meadows,plains,swamp
+pickable_stone_meadows_swamp	meadows,swamp
+pickable_stonerock_meadows_blackforest_mountain_swamp	blackforest,meadows,mountain,swamp
+pickable_thistle_swamp_blackforest	blackforest,swamp
+pickable_tin_blackforest	blackforest
+piece_beehive	blackforest,meadows,plains
+piece_birdnest	blackforest,meadows,plains
+piece_sapling_barley	plains
+piece_sapling_carrot	ashlands,blackforest,meadows,plains
+piece_sapling_flax	plains
+piece_sapling_jotunpuffs	mistlands
+piece_sapling_kale	ashlands,blackforest,meadows,plains
+piece_sapling_magecap	mistlands
+piece_sapling_oat	ashlands,blackforest,meadows,plains
+piece_sapling_onion	ashlands,blackforest,meadows,plains
+piece_sapling_poteitr	ashlands,blackforest,meadows,plains
+piece_sapling_seedcarrot	ashlands,blackforest,meadows,plains
+piece_sapling_seedkale	ashlands,blackforest,meadows,plains
+piece_sapling_seedonion	ashlands,blackforest,meadows,plains
+piece_sapling_seedturnip	ashlands,blackforest,meadows,mistlands,plains,swamp
+piece_sapling_turnip	ashlands,blackforest,meadows,mistlands,plains,swamp
+piece_sapling_vineash	ashlands,blackforest,meadows,mistlands,ocean,plains,swamp
+piece_sapling_vinegreen	blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+pinetree_snow	deepnorth
+pinetree_snow_dead	deepnorth
+poison skeleton	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+pot2_red	ashlands
+pot_shard	ashlands
+prop_beech_sapling	blackforest,meadows,plains
+prop_birch_sapling	blackforest,meadows,plains
+prop_fir_big_sapling	blackforest,meadows,mountain,plains
+prop_fir_sapling	blackforest,meadows,mountain,plains
+prop_oak_sapling	blackforest,meadows,plains
+prop_pine_sapling	blackforest,meadows,plains
+raspberry_bush2	meadows
+raspberrybush_meadows	meadows
+ribs	mistlands
+rock 3	deepnorth
+rock 4	deepnorth
+rock 7	deepnorth
+rock1_mountain	mountain
+rock2_heath	plains
+rock2_mountain	mountain
+rock3_mountain	mountain
+rock3_mountain_1	mountain
+rock3_mountain_2	mountain
+rock3_silver	mountain
+rock4_blackforest	blackforest
+rock4_coast	blackforest,deepnorth,meadows,mistlands,ocean
+rock4_copper_blackforest	blackforest
+rock_3_blackforest	blackforest
+rock_3_meadows_mountain	meadows,mountain
+rock_3_mistlands	mistlands
+rock_4_blackforest	blackforest
+rock_4_heath	plains
+rock_4_meadows_mountain	meadows,mountain
+rock_4_mistlands	mistlands
+rock_4_plains	plains
+rock_4_swamp	swamp
+rock_7_meadows	meadows,plains
+rock_a_heath	plains
+rock_ashlands1	ashlands
+rock_ashlands2	ashlands
+rock_ashlands3	ashlands
+rock_mistlands1	mistlands
+rock_mistlands2	mistlands
+rock_mistlands3	mistlands
+rockformation1_heath	plains
+runestone	deepnorth
+shaman	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+shipsetting	deepnorth
+shore ice	deepnorth
+shrub_2_blackforest	blackforest
+shrub_2_heath	plains,swamp
+shrub_2_meadows	meadows
+shrub_3_meadows	meadows
+silvervein	mountain
+skeletons	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+skeltons	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+skull	ashlands,mistlands
+skull1_mistlands	mistlands
+skull2_mistlands	mistlands
+small rock1	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+small rock2	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+snowball	deepnorth
+snowfirtree	deepnorth
+snowfirtree_small	deepnorth
+snowfirtree_sparse	deepnorth
+statue_evil_swamp	swamp
+stone_wall_1x1_ruin	blackforest
+stone_wall_2x1_ruin	blackforest
+stone_wall_ruin	blackforest,mountain
+stone_wall_ruin_2	blackforest,mountain
+stubbe	deepnorth
+stubbe many	blackforest
+stubbe pine many	blackforest
+stubbe2_meadows	meadows
+stubbe_blackforest	blackforest
+stubbe_meadows	meadows
+stubbe_mistlands	mistlands
+stubbe_swamp	swamp
+surtlings	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
+swampgrass	swamp
+swamptree1	swamp
+swamptree2	swamp
+swamptree2_darkland	mistlands
+swamptree2_log	swamp
+swamptree3	swamp
+swamptree4	swamp
+swamptree5	swamp
+swamptree6	swamp
+thehole01	deepnorth
+tree_ashlands1	ashlands
+tree_ashlands2	ashlands
+tree_ashlands3	ashlands
+tree_ashlands4	ashlands
+tunnel_web	mistlands
+vass	blackforest,meadows,mountain,ocean,plains,swamp
+veg	ashlands
+vertical_web	mistlands
+vfx_ocean_clouds	ocean
+vfx_swamp_mist	swamp
+water lilies	blackforest,meadows
+waystone	meadows,plains
+wolves	mountain,plains
+wood pole log 4	swamp
+wooden_path	swamp
+ygga root	mistlands
+ygga root2	mistlands

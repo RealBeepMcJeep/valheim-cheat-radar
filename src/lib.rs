@@ -3290,6 +3290,35 @@ fn report_markdown_with_characters(
             ));
         }
     }
+    if let Some(latest) = latest {
+        if !latest.biomes.is_empty() {
+            let mut histogram = [0usize; BIOME_COUNT];
+            let mut coloured = 0usize;
+            for tally in latest.biomes.values() {
+                if let Some((index, _)) = biome_verdict(tally) {
+                    histogram[index] += 1;
+                    coloured += 1;
+                }
+            }
+            let populated = latest.grid.len().max(1);
+            let breakdown = BIOMES
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| histogram[*index] > 0)
+                .map(|(index, (_, name))| format!("{name} {}", histogram[index]))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let detail = if breakdown.is_empty() {
+                String::new()
+            } else {
+                format!(" Verdicts: {breakdown}.")
+            };
+            output.push_str(&format!(
+                "\n## Map biome layer\n\n{coloured} of {populated} populated 64 m cells carry a biome verdict ({}% of the newest snapshot). Cells with too little evidence stay blank, so undeveloped, ocean and unexplored ground is never guessed.{detail}\n\n",
+                coloured * 100 / populated,
+            ));
+        }
+    }
     if let (Some(old), Some(new)) = (previous, latest) {
         output.push_str(&format!("\n## Latest snapshot change\n\nCompared with **{}**, latest **{}** has ZDO count {} -> {}, item hits {} -> {}, ZDO flags {} -> {}, and queued flags {} -> {}.\n\nMatching is approximate because chunked records omit persistent ZDOID.\n", old.snapshot, new.snapshot, old.zdo_count, new.zdo_count, old.item_count, new.item_count, old.zdo_cheated_count, new.zdo_cheated_count, old.station_queued_cheated_count, new.station_queued_cheated_count));
     }
