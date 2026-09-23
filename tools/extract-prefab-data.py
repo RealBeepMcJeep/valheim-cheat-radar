@@ -94,6 +94,145 @@ def read_name(obj) -> str | None:
     return name or None
 
 
+def cab_name(env) -> str | None:
+    """Internal CAB name of a bundle, which is what another bundle's dependency list refers to."""
+    for obj in env.objects:
+        if obj.type.name == "AssetBundle":
+            return getattr(obj.assets_file, "name", None)
+    return None
+
+
+def scene_references(env) -> tuple[list[str], list[tuple[int, int, int]]]:
+    """Dependency names plus (file_id, path_id, biome bits) prefab references in a scene bundle.
+
+    A scene's zone tables point at prefabs that live in *other* bundles, so these references are
+    what carries the biome of trees and plants that no single prefab knows about.
+    """
+    dependencies: list[str] = []
+    for obj in env.objects:
+        if obj.type.name == "AssetBundle":
+            read = obj.read()
+            dependencies = [str(dep) for dep in (getattr(read, "m_Dependencies", None) or [])]
+            break
+
+    references: set[tuple[int, int, int]] = set()
+    for obj in env.objects:
+        if obj.type.name != "MonoBehaviour":
+            continue
+        tree = read_tree(obj)
+        if tree is not None and has_biome(tree):
+            collect_references(tree, 0, references)
+    return dependencies, sorted(references)
+
+
+def collect_references(node, bits: int, out: set[tuple[int, int, int]]) -> set[tuple[int, int, int]]:
+    """Like `collect`, but keeps the (file, path) reference instead of a name."""
+    if isinstance(node, dict):
+        inherited = node.get("m_biome")
+        if isinstance(inherited, int) and inherited:
+            bits = inherited
+        prefab = node.get("m_prefab")
+        if bits and isinstance(prefab, dict) and prefab.get("m_PathID"):
+            out.add((int(prefab.get("m_FileID", 0)), int(prefab["m_PathID"]), bits))
+        for key, value in node.items():
+            if key == "m_prefab":
+                continue
+            collect_references(value, bits, out)
+    elif isinstance(node, list):
+        for value in node:
+            collect_references(value, bits, out)
+    return out
+
+
+def index_cabs(bundles: list[Path], cache: Path) -> dict[str, str]:
+    """Map every bundle's internal CAB name to its file name (see `--index-cabs`)."""
+    import UnityPy
+
+    index: dict[str, str] = {}
+    for count, bundle in enumerate(bundles, start=1):
+        try:
+            name = cab_name(UnityPy.load(str(bundle)))
+        except Exception as cause:  # one broken bundle must not stop the index
+            print(f"  ! {bundle.name}: {cause}", file=sys.stderr)
+            continue
+        if name:
+            index[name.lower()] = bundle.name
+        if count % 100 == 0:
+            print(f"  {count}/{len(bundles)} bundles indexed", flush=True)
+    (cache / "cab-index.json").write_text(json.dumps(index), encoding="utf-8")
+    print(f"indexed {len(index)} cab names -> {cache / 'cab-index.json'}")
+    return index
+
+
+def resolve_scene(
+    scene: Path, bundles: Path, cache: Path, out_dir: Path, table: dict[str, set[str]]
+) -> None:
+    """Add the biome of prefabs that a scene's zone tables reference (trees, plants, ore veins)."""
+    import UnityPy
+
+    index_file = cache / "cab-index.json"
+    if not index_file.exists():
+        print("run --index-cabs first", file=sys.stderr)
+        raise SystemExit(2)
+    cab_index = {name.lower(): file for name, file in json.loads(index_file.read_text(encoding="utf-8")).items()}
+
+    env = UnityPy.load(str(scene))
+    dependencies, references = scene_references(env)
+    print(f"scene {scene.name}: {len(references)} biome references across {len(dependencies)} dependencies")
+
+    # Group the references by the bundle that actually holds the prefab, so each loads once.
+    by_bundle: dict[str, set[int]] = collections.defaultdict(set)
+    bits_by_ref: dict[tuple[str, int], int] = collections.defaultdict(int)
+    missing_files = 0
+    for file_id, path_id, bits in references:
+        if file_id == 0:
+            bundle_file = scene.name
+        else:
+            dependency = dependencies[file_id - 1] if 0 < file_id <= len(dependencies) else None
+            bundle_file = cab_index.get(dependency.lower()) if dependency else None
+            if not bundle_file:
+                missing_files += 1
+                continue
+        by_bundle[bundle_file].add(path_id)
+        bits_by_ref[(bundle_file, path_id)] |= bits
+
+    resolved: dict[tuple[str, int], str] = {}
+    for bundle_file, path_ids in by_bundle.items():
+        try:
+            holder = UnityPy.load(str(bundles / bundle_file))
+        except Exception as cause:
+            print(f"  ! {bundle_file}: {cause}", file=sys.stderr)
+            continue
+        for obj in holder.objects:
+            if obj.type.name == "GameObject" and obj.path_id in path_ids:
+                name = read_name(obj)
+                if name:
+                    resolved[(bundle_file, obj.path_id)] = name
+    print(f"resolved {len(resolved)}/{len(bits_by_ref)} referenced prefabs ({missing_files} refs had no bundle)")
+
+    added = 0
+    for (bundle_file, path_id), name in resolved.items():
+        bits = bits_by_ref[(bundle_file, path_id)]
+        cleaned = clean_name(name)
+        if not cleaned or not bits:
+            continue
+        table.setdefault(cleaned, set()).update(
+            biome for bit, biome in BIOME_BITS.items() if bits & bit
+        )
+        added += 1
+    print(f"added or updated {added} prefabs from the scene's referenced tables")
+
+    # Rewrite prefab_biomes.txt from the merged table.
+    target = out_dir / "prefab_biomes.txt"
+    target.write_text(
+        "# <prefab name><TAB><biome>[,<biome>...] — extracted from the game's bundles by\n"
+        "# tools/extract-prefab-data.py. Cells are coloured from these; see README.md.\n"
+        + "".join(f"{name}\t{','.join(sorted(biomes))}\n" for name, biomes in sorted(table.items())),
+        encoding="utf-8",
+    )
+    print(f"prefab_biomes.txt now holds {len(table)} tagged prefabs")
+
+
 def has_biome(node) -> bool:
     if isinstance(node, dict):
         if isinstance(node.get("m_biome"), int) and node["m_biome"]:
@@ -204,6 +343,16 @@ def main() -> int:
     parser.add_argument("--cache", default=None, help="per-bundle cache directory (makes reruns cheap)")
     parser.add_argument("--limit", type=int, default=0, help="only scan the first N bundles")
     parser.add_argument("--only", nargs="*", default=[], help="only scan these bundle file names")
+    parser.add_argument(
+        "--index-cabs",
+        action="store_true",
+        help="only build the cab-name index that --resolve-scene needs (no tables written)",
+    )
+    parser.add_argument(
+        "--resolve-scene",
+        metavar="BUNDLE",
+        help="bundle holding Assets/Scenes/main.unity: resolve the prefab biomes its zone tables reference",
+    )
     args = parser.parse_args()
 
     bundles = sorted(path for path in Path(args.bundles).iterdir() if path.is_file())
@@ -219,6 +368,14 @@ def main() -> int:
     cache = Path(args.cache) if args.cache else None
     if cache:
         cache.mkdir(parents=True, exist_ok=True)
+
+    bundles_dir = Path(args.bundles)
+    if args.index_cabs:
+        if not cache:
+            print("--index-cabs needs --cache", file=sys.stderr)
+            return 2
+        index_cabs(bundles, cache)
+        return 0
 
     all_names: set[str] = set()
     all_biomes: dict[str, set[str]] = collections.defaultdict(set)
@@ -269,6 +426,13 @@ def main() -> int:
         f"prefabs with biomes: {len(tagged)} -> prefab_biomes.txt\n"
         f"single-biome: {sum(1 for value in tagged.values() if len(value) == 1)}"
     )
+
+    if args.resolve_scene:
+        if not cache:
+            print("--resolve-scene needs --cache", file=sys.stderr)
+            return 2
+        scene_table = {name: set(biomes) for name, biomes in all_biomes.items()}
+        resolve_scene(bundles_dir / args.resolve_scene, bundles_dir, cache, out, scene_table)
     return 0
 
 
