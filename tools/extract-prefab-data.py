@@ -144,11 +144,15 @@ def collect_references(node, bits: int, out: set[tuple[int, int, int]]) -> set[t
     return out
 
 
-def index_cabs(bundles: list[Path], cache: Path) -> dict[str, str]:
-    """Map every bundle's internal CAB name to its file name (see `--index-cabs`)."""
+def index_cabs(bundles: list[Path], cache: Path) -> dict[str, list[str]]:
+    """Map every bundle's internal CAB name to the bundle files that claim it (see `--index-cabs`).
+
+    A cab name can appear in more than one bundle file, so callers must try each candidate rather
+    than trusting a single mapping.
+    """
     import UnityPy
 
-    index: dict[str, str] = {}
+    index: dict[str, list[str]] = {}
     for count, bundle in enumerate(bundles, start=1):
         try:
             name = cab_name(UnityPy.load(str(bundle)))
@@ -156,7 +160,9 @@ def index_cabs(bundles: list[Path], cache: Path) -> dict[str, str]:
             print(f"  ! {bundle.name}: {cause}", file=sys.stderr)
             continue
         if name:
-            index[name.lower()] = bundle.name
+            candidates = index.setdefault(name.lower(), [])
+            if bundle.name not in candidates:
+                candidates.append(bundle.name)
         if count % 100 == 0:
             print(f"  {count}/{len(bundles)} bundles indexed", flush=True)
     (cache / "cab-index.json").write_text(json.dumps(index), encoding="utf-8")
@@ -174,7 +180,10 @@ def resolve_scene(
     if not index_file.exists():
         print("run --index-cabs first", file=sys.stderr)
         raise SystemExit(2)
-    cab_index = {name.lower(): file for name, file in json.loads(index_file.read_text(encoding="utf-8")).items()}
+    cab_index: dict[str, list[str]] = {
+        name.lower(): files
+        for name, files in json.loads(index_file.read_text(encoding="utf-8")).items()
+    }
 
     env = UnityPy.load(str(scene))
     dependencies, references = scene_references(env)
@@ -187,40 +196,55 @@ def resolve_scene(
         f"{len(externals)} external files, {len(dependencies)} bundle dependencies"
     )
 
-    # Group the references by the bundle that actually holds the prefab, so each loads once.
-    by_bundle: dict[str, set[int]] = collections.defaultdict(set)
+    # Group the references by cab, so each candidate bundle is loaded once and only while ids remain.
+    by_cab: dict[str, set[int]] = collections.defaultdict(set)
+    candidates_by_cab: dict[str, list[str]] = {}
     bits_by_ref: dict[tuple[str, int], int] = collections.defaultdict(int)
     missing_files = 0
     for file_id, path_id, bits in references:
         if file_id == 0:
-            bundle_file = scene.name
-        else:
-            bundle_file = None
-            if 0 < file_id <= len(externals):
-                match = re.search(r"(CAB-[0-9a-fA-F]+)", str(externals[file_id - 1]))
-                if match:
-                    bundle_file = cab_index.get(match.group(1).lower())
-            if not bundle_file:
-                missing_files += 1
-                continue
-        by_bundle[bundle_file].add(path_id)
-        bits_by_ref[(bundle_file, path_id & 0xFFFFFFFFFFFFFFFF)] |= bits
+            by_cab["__scene__"].add(path_id & 0xFFFFFFFFFFFFFFFF)
+            candidates_by_cab["__scene__"] = [scene.name]
+            bits_by_ref[("__scene__", path_id & 0xFFFFFFFFFFFFFFFF)] |= bits
+            continue
+        candidates: list[str] = []
+        if 0 < file_id <= len(externals):
+            match = re.search(r"(CAB-[0-9a-fA-F]+)", str(externals[file_id - 1]))
+            if match:
+                candidates = cab_index.get(match.group(1).lower(), [])
+        if not candidates:
+            missing_files += 1
+            continue
+        cab = candidates[0]
+        for candidate in candidates[1:]:
+            # Distinct cabs that share a file keep their own group by joining on the file name.
+            cab = f"{cab}|{candidate}"
+        key = f"{cab}:{file_id}"
+        by_cab[key].add(path_id & 0xFFFFFFFFFFFFFFFF)
+        candidates_by_cab[key] = candidates
+        bits_by_ref[(key, path_id & 0xFFFFFFFFFFFFFFFF)] |= bits
 
     resolved: dict[tuple[str, int], str] = {}
     # Path ids are signed in the scene's typetree but may come back unsigned from a bundle, so compare
-    # them masked to 64 bits rather than by Python value.
-    for bundle_file, path_ids in by_bundle.items():
-        try:
-            holder = UnityPy.load(str(bundles / bundle_file))
-        except Exception as cause:
-            print(f"  ! {bundle_file}: {cause}", file=sys.stderr)
-            continue
-        wanted = {path_id & 0xFFFFFFFFFFFFFFFF for path_id in path_ids}
-        for obj in holder.objects:
-            if obj.type.name == "GameObject" and (obj.path_id & 0xFFFFFFFFFFFFFFFF) in wanted:
-                name = read_name(obj)
-                if name:
-                    resolved[(bundle_file, obj.path_id & 0xFFFFFFFFFFFFFFFF)] = name
+    # them masked to 64 bits.
+    for key, path_ids in by_cab.items():
+        remaining = set(path_ids)
+        for candidate in candidates_by_cab.get(key, []):
+            if not remaining:
+                break
+            try:
+                holder = UnityPy.load(str(bundles / candidate))
+            except Exception as cause:
+                print(f"  ! {candidate}: {cause}", file=sys.stderr)
+                continue
+            for obj in holder.objects:
+                if obj.type.name == "GameObject" and (obj.path_id & 0xFFFFFFFFFFFFFFFF) in remaining:
+                    name = read_name(obj)
+                    if name:
+                        resolved[(key, obj.path_id & 0xFFFFFFFFFFFFFFFF)] = name
+                        remaining.discard(obj.path_id & 0xFFFFFFFFFFFFFFFF)
+        if remaining:
+            print(f"  {len(remaining)} refs unresolved in {key}", file=sys.stderr)
     print(f"resolved {len(resolved)}/{len(bits_by_ref)} referenced prefabs ({missing_files} refs had no bundle)")
 
     added = 0

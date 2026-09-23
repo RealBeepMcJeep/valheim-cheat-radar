@@ -10,6 +10,21 @@ Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `pla
 - Biomes on the map: content-based inference (a+b below) is wanted ASAP; the accurate seed/minimap path
   is explicitly deferred.
 
+## Data-table lifecycle and size (settled with the owner, 2026-09-23)
+
+- **Gzip the tables for the app**: 726 KB of names → 136 KB, biomes 23 KB → 4 KB, produced by
+  `web/scripts/build-wasm.mjs` into a gitignored directory so nothing is duplicated in git. The native
+  CLI keeps reading the plain committed files.
+- **Lazy-load on the first ingested world file**, not at app start, and **drop both tables once the
+  report has been built** — after parsing they are no longer needed (names are already strings in the
+  report, and the map carries per-cell biomes). Re-inflating for a later scan costs ~10 ms, so dropping
+  them is free.
+- **Prune only what is demonstrably useless** — instance-suffix names (`Thing.047`), `DEF-*`, and 1–2
+  character part names. Gzip already makes the full table cheap, so measure before cutting more.
+- **Heightmap**: a true heightmap is not stored in a save (terrain comes from the generator). Cheap
+  option from data we already have: per-cell ZDO altitude (mean/max `y`) drawn as relief shading —
+  roughly ten lines in the tally plus a layer. The accurate version is the deferred seed/minimap path.
+
 ## UI plan (settled with the owner, 2026-09-23)
 
 - **World metadata lives in two places**: a compact expandable `World details` panel in the masthead
