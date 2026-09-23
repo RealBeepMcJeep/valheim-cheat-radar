@@ -97,7 +97,38 @@ Working data for these checks lives outside the repository at
 - [x] Attach the single-file build automatically: publishing a release (or dispatching the workflow
       with a `tag` input) builds that tag and uploads `valheim-cheat-radar.html` to the release.
 
-## Map: biomes from content (wanted ASAP)
+## Map: biome extraction findings (2026-09-23)
+
+Environment: `D:\code\valheim-mods\Decompiled\Valheim\` is the full decompiled `assembly_valheim`
+(631 files). The Biome flags enum + names live in `Heightmap.cs:16` (`None/Meadows=1/Swamp=2/
+Mountain=4/BlackForest=8/Plains=0x10/AshLands=0x20/DeepNorth=0x40/Ocean=0x100/Mistlands=0x200`) with
+the string mapping at `Heightmap.cs:1366`. The prefab↔biome tables are serialized MonoBehaviour
+fields, not code:
+
+| holder | fields | where it was found |
+|---|---|---|
+| `ZoneSystem` | `m_vegetation` (`ZoneVegetation.m_prefab` + `m_biome`), `m_locations` (`ZoneLocation.m_prefabName` + `m_biome`), `m_clutter` | bundle `…/SoftRef/Bundles/17245031` (461 KB) |
+| `SpawnSystemList` | `m_spawners` (`SpawnData.m_prefab` + `m_biome`) | creature spawn areas in `…/Bundles/c4210710` |
+| `ClutterSystem` | `m_clutter` (`Clutter.m_prefab` + `m_biome`) | same zone bundle |
+
+The game install is at `I:\SteamLibrary\steamapps\common\Valheim` and its `valheim_Data` is mostly
+stubs — content lives in 799 hash-named bundles under `StreamingAssets/SoftRef/Bundles/` (4.2 GB).
+UnityPy 1.25.3 is installed for the system Python and already used by
+`D:\code\valheim-mods\Scratch\mob-forms-prefab-parse.py`, so no new tooling is needed; a bundle loads
+in ~5 s and every sampled MonoBehaviour had a readable typetree.
+
+Measured so far (candidate tables written to `%TEMP%\vcradar-e2e\prefab_biomes_*.json`, not committed):
+
+- `17245031`: **105** prefabs with a biome (98 single-biome) from `m_locations`/`m_vegetation`/`m_clutter`
+  — and the assignments check out: `Crypt2..4` and `Greydwarf_camp*` → blackforest, `Grave1` → swamp,
+  `DrakeNest01`/`Dragonqueen` → mountain, `GoblinCamp*`/`GoblinKing` → plains, `Eikthyrnir` → meadows.
+- `c4210710`: **82** prefabs (59 single-biome) from creature spawn areas — `Wolf` → mountain,
+  `Blob` → swamp, `Serpent` → ocean, `Asksvin` → ashlands.
+- `m_locations` names come through directly (`m_prefabName`); `m_vegetation`/`m_clutter` entries only
+  carry PPtr references, so their names (trees, plants — the strongest biome signal) still need
+  cross-bundle PPtr resolution via the bundle's external list. That is the next extraction step.
+- Reminder: item prefabs (what the audit flags: `Iron`, `Entrails`, …) carry no biome at all. The layer
+  classifies world content, and a flagged item inherits the biome of the cell it sits in.
 
 Current state: the map draws ZDO *density* per 64 m cell in one amber layer, plus evidence markers.
 There is no biome estimate, and nothing stores per-cell prefab composition.
