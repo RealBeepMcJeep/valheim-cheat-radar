@@ -10,6 +10,25 @@ Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `pla
 - Biomes on the map: content-based inference (a+b below) is wanted ASAP; the accurate seed/minimap path
   is explicitly deferred.
 
+## UI plan (settled with the owner, 2026-09-23)
+
+- **World metadata lives in two places**: a compact expandable `World details` panel in the masthead
+  (newest snapshot: world name, version, seed, player count, progression-flag count, and the flags
+  themselves), and the same fields per archive on the existing Timeline cards. Render parse errors only
+  when present, next to the archive they belong to.
+- **Seed is shown plainly** with a copy control (it is the user's own data, and it is useful), and it
+  stays unmasked in exports.
+- **Progression flags stay metadata**: they do not become evidence rows and the evidence CSV keeps its
+  current shape.
+- **Biome layer reuses the existing 64 m grid**, drawn as biome fill *under* the density shading, with a
+  Biome / Density / Both control and a legend.
+- **Verdict rule** (implemented): at least three single-biome objects' worth of weight and a 60% share
+  for one biome, otherwise the cell stays blank.
+- **Generated tables are committed** (`prefab_names.txt`, `prefab_biomes.txt`) and the name table is
+  expanded from the same extraction, with provenance documented in `README.md`.
+- **Multi-archive discoverability**: add an inline hint when only one archive is loaded, explaining that
+  adding an earlier save classifies rows as `new` / `persisted` / `removed_or_cleared`.
+
 ## Character backup convention
 
 Active profile plus its lineage is copied from the Steam Cloud profile directory
@@ -125,23 +144,30 @@ Measured so far (candidate tables written to `%TEMP%\vcradar-e2e\prefab_biomes_*
 - `c4210710`: **82** prefabs (59 single-biome) from creature spawn areas — `Wolf` → mountain,
   `Blob` → swamp, `Serpent` → ocean, `Asksvin` → ashlands.
 - `m_locations` names come through directly (`m_prefabName`); `m_vegetation`/`m_clutter` entries only
-  carry PPtr references, so their names (trees, plants — the strongest biome signal) still need
-  cross-bundle PPtr resolution via the bundle's external list. That is the next extraction step.
+  carry PPtr references. That turned out not to matter: the generator also names each biome-bearing
+  component's *owner* object, so flora and saplings come through without any cross-bundle PPtr work.
+  Two bundles alone yielded 368 tagged prefabs (271 single-biome) and 20,732 names.
 - Reminder: item prefabs (what the audit flags: `Iron`, `Entrails`, …) carry no biome at all. The layer
   classifies world content, and a flagged item inherits the biome of the cell it sits in.
 
 Current state: the map draws ZDO *density* per 64 m cell in one amber layer, plus evidence markers.
 There is no biome estimate, and nothing stores per-cell prefab composition.
 
-- [ ] Record, per 64 m cell, a weighted tally of classified prefab biome evidence during parsing (the
+- [x] Record, per 64 m cell, a weighted tally of classified prefab biome evidence during parsing (the
       same loop that already builds the density grid), so no second pass over the world is needed.
-- [ ] Generate a committed `prefab_biomes.txt` (prefab name → biome) from the decompiled game data,
-      with a documented generator, mirroring `prefab_names.txt`. Game data, not save data.
+      Done in `record_zdo_spatial`: weight is `12 / biomes`, and the tally rides along in
+      `ArchiveScan.biomes`.
+- [x] Generate a committed `prefab_biomes.txt` (prefab name → biome) from the game data, with a
+      documented generator (`tools/extract-prefab-data.py`). Validated on the zone and creature
+      bundles: crypts/greydwarf camps → blackforest, graves → swamp, drake nests → mountain, goblin
+      camps → plains, wolves → mountain, serpents → ocean, flax/barley saplings → plains. The full
+      799-bundle sweep produces the committed tables next.
 - [ ] Expand `prefab_names.txt` (56 names today) from the same extraction, so names stop rendering as
       `<unknown>` everywhere, not just on the map.
-- [ ] Classify a cell only with enough evidence (e.g. ≥3 classified objects and a dominant share);
-      otherwise leave it uncoloured — undeveloped, ocean and unexplored cells must stay blank rather
-      than be guessed, and the cell popup should show the counts behind the verdict.
+- [x] Classify a cell only with enough evidence (≥3 single-biome objects' worth of weight) and a 60%
+      share; otherwise leave it uncoloured — undeveloped, ocean and unexplored cells stay blank rather
+      than be guessed. Implemented as `biome_verdict`; a cell popup with the counts behind the verdict
+      is still to come with the UI work.
 - [ ] Render biome fill plus density shading with a view control (Biome / Density / Both) and a legend,
       with one colour per biome (meadow green, black forest darker green, mountain white/grey, plains
       tan, swamp murky green, ashlands dark red, mistlands purple-grey, ocean deep blue).

@@ -13,7 +13,7 @@ use valheim_backup_cheat_scanner::{
 
 #[cfg(not(target_arch = "wasm32"))]
 fn usage() -> ! {
-    eprintln!("usage: valheim-backup-cheat-scanner [--archive-dir DIR] [--output-dir DIR] [--prefab-names FILE] [--zstd PROGRAM] [--character FILE] [--character-history-dir DIR] [--oracle FILE] [--validate]");
+    eprintln!("usage: valheim-backup-cheat-scanner [--archive-dir DIR] [--output-dir DIR] [--prefab-names FILE] [--prefab-biomes FILE] [--zstd PROGRAM] [--character FILE] [--character-history-dir DIR] [--oracle FILE] [--validate]");
     std::process::exit(2);
 }
 
@@ -34,6 +34,8 @@ fn main() {
     let mut archive_dir = PathBuf::from(".");
     let mut output_dir = PathBuf::from("reports-rust");
     let mut prefab_names = PathBuf::from("prefab_names.txt");
+    let mut prefab_biomes = PathBuf::from("prefab_biomes.txt");
+    let mut prefab_biomes_given = false;
     let mut zstd = String::from("zstd");
     let mut character: Option<PathBuf> = None;
     let mut character_history_dir: Option<PathBuf> = None;
@@ -64,6 +66,14 @@ fn main() {
                     .map(PathBuf::from)
                     .unwrap_or_else(|| usage());
             }
+            "--prefab-biomes" => {
+                index += 1;
+                prefab_biomes = args
+                    .get(index)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| usage());
+                prefab_biomes_given = true;
+            }
             "--zstd" => {
                 index += 1;
                 zstd = args.get(index).cloned().unwrap_or_else(|| usage());
@@ -88,7 +98,13 @@ fn main() {
     }
 
     let started = Instant::now();
-    let archives = match scan_archives(&archive_dir, &zstd, &prefab_names) {
+    // The default biome table is optional; an explicitly requested one must exist.
+    let biome_path = if prefab_biomes_given || prefab_biomes.is_file() {
+        Some(prefab_biomes.as_path())
+    } else {
+        None
+    };
+    let archives = match scan_archives(&archive_dir, &zstd, &prefab_names, biome_path) {
         Ok(archives) => archives,
         Err(error) => {
             eprintln!("scan failed: {error}");

@@ -11,6 +11,7 @@
 - `.fwl2` is parsed for the world version, name, seed and player *count*. Its player list holds Steam ids and character names; they are read only far enough to count the entries and are never retained or reported.
 - `.db2` is parsed for progression flags. Its payload is `[u32 version][u64 uid][u32 payload length][gzip member][trailer]`, and only the key namespaces the audit needs — `defeated_*`, `killed*`, `activebosses`, `event_*`, `hildir*`, `bosshildir*` — are kept, so unrelated payload strings (names, ids, world state) cannot reach a report. Unknown shapes are reported as a metadata error rather than guessed.
 - World metadata never aborts a scan: a `.fwl2`/`.db2` that cannot be parsed records an error on that archive while the world audit still completes.
+- Biome bits follow the game's `Heightmap.Biome` flags: `meadows=0x01`, `swamp=0x02`, `mountain=0x04`, `blackforest=0x08`, `plains=0x10`, `ashlands=0x20`, `deepnorth=0x40`, `ocean=0x100`, `mistlands=0x200`. The map's biome layer is *inferred from content*, never read from the save: every ZDO whose prefab the game tags with a biome votes for it in that 64 m cell, weighted `12 / biomes` because a prefab tagged with many biomes carries little information. A cell is coloured only with at least three single-biome objects' worth of weight and a 60% share for one biome; thinner cells stay blank. Provenance of the lookup table: `README.md` (`prefab_biomes.txt`).
 
 ## Character profiles
 

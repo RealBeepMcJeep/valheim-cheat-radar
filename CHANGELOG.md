@@ -4,6 +4,14 @@
 
 ### Added
 
+- Biome inference from content for the map: every ZDO whose prefab the game tags with a biome votes
+  for that biome in its 64 m cell, weighted `12 / biomes` so a prefab tagged with many biomes counts
+  for less. A cell is coloured only with at least three single-biome objects' worth of weight and a 60%
+  share for one biome; thinner cells stay blank. The map JSON carries `biomes` plus `biome_names`, and
+  the CLI takes `--prefab-biomes FILE` (optional: without the table the layer is simply absent).
+- `tools/extract-prefab-data.py`, which generates the committed `prefab_names.txt` and
+  `prefab_biomes.txt` from the game's own bundles — game data, never save data. Provenance and the
+  regeneration command are in `README.md`; the bits and thresholds are in `FORMAT.md`.
 - `.fwl2` world metadata: world version, name, seed, and player *count*. The player list's Steam ids
   and character names are read only far enough to count entries and are never retained or reported.
 - `.db2` progression flags (`defeated_*`, `killed*`, `activebosses`, `event_*`, `hildir*`,

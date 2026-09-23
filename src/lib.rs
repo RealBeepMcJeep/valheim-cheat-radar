@@ -215,6 +215,8 @@ fn stable_hash_index_item_data(index: usize) -> i32 {
 pub struct PrefabNames {
     names: Vec<(i32, String)>,
     indexed_item_data: HashMap<i32, usize>,
+    /// Prefab hash -> biome bitmask, from the game's own data (see `prefab_biomes.txt`).
+    biomes: HashMap<i32, u16>,
 }
 
 impl PrefabNames {
@@ -231,7 +233,32 @@ impl PrefabNames {
         Self {
             names,
             indexed_item_data,
+            biomes: HashMap::new(),
         }
+    }
+
+    /// Attach the generated prefab -> biome table: `<prefab name><TAB><biome>[,<biome>...]`.
+    /// Unknown biome names are ignored rather than guessed, so a stale table degrades to "no colour".
+    pub fn with_biome_text(mut self, text: &str) -> Self {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((name, biomes)) = line.split_once('\t') else {
+                continue;
+            };
+            let mut mask = 0u16;
+            for biome in biomes.split(',') {
+                if let Some((bit, _)) = BIOMES.iter().find(|(_, known)| *known == biome.trim()) {
+                    mask |= bit;
+                }
+            }
+            if mask != 0 {
+                self.biomes.insert(stable_hash(name.trim()), mask);
+            }
+        }
+        self
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -245,6 +272,16 @@ impl PrefabNames {
         self.names
             .iter()
             .find_map(|(known_hash, name)| (*known_hash == hash).then_some(name.as_str()))
+    }
+
+    /// Biome bitmask for a prefab hash; 0 when the prefab is unknown or carries no biome.
+    pub fn biome_mask(&self, hash: i32) -> u16 {
+        self.biomes.get(&hash).copied().unwrap_or(0)
+    }
+
+    /// Number of prefabs in the biome table, for diagnostics.
+    pub fn biome_count(&self) -> usize {
+        self.biomes.len()
     }
 
     fn indexed_item_data(&self, hash: i32) -> Option<usize> {
@@ -1184,6 +1221,59 @@ pub struct ParseOutput {
     pub grid: HashMap<(i32, i32), u32>,
     /// ZDO count per owner prefab hash, for habitat/prefab context.
     pub prefabs: HashMap<i32, u32>,
+    /// Biome votes per world-map cell, from prefabs the game tags with a biome.
+    pub biomes: HashMap<(i32, i32), BiomeTally>,
+}
+
+/// Biome flag bits, matching the game's `Heightmap.Biome` enum (see FORMAT.md). The order fixes the
+/// index used by the map layer and its legend. The game's bits run to `0x200`, so this is a `u16`.
+const BIOMES: [(u16, &str); 9] = [
+    (0x01, "meadows"),
+    (0x02, "swamp"),
+    (0x04, "mountain"),
+    (0x08, "blackforest"),
+    (0x10, "plains"),
+    (0x20, "ashlands"),
+    (0x40, "deepnorth"),
+    (0x100, "ocean"),
+    (0x200, "mistlands"),
+];
+const BIOME_COUNT: usize = BIOMES.len();
+/// Per-cell biome votes, with the total weight in the last slot.
+type BiomeTally = [u32; BIOME_COUNT + 1];
+const BIOME_TOTAL: usize = BIOME_COUNT;
+
+/// A prefab the game tags with several biomes carries proportionally less information, so weight it
+/// `12 / biomes` (a single-biome object is worth 12, a two-biome object 6, nine biomes 1).
+fn biome_weight(mask: u16) -> u32 {
+    let count = mask.count_ones();
+    if count == 0 {
+        0
+    } else {
+        (12 / count).max(1)
+    }
+}
+
+/// A cell is coloured only with three single-biome objects' worth of weight and a 60% share of it;
+/// anything weaker stays uncoloured rather than guessed (undeveloped, ocean and unexplored cells).
+const BIOME_MIN_WEIGHT: u32 = 36;
+const BIOME_MIN_SHARE_PERCENT: u32 = 60;
+
+/// Dominant biome for a cell and its share of the votes, or None when the evidence is too thin.
+fn biome_verdict(tally: &BiomeTally) -> Option<(usize, u32)> {
+    let total = tally[BIOME_TOTAL];
+    if total < BIOME_MIN_WEIGHT {
+        return None;
+    }
+    let (index, votes) = tally[..BIOME_COUNT]
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, votes)| **votes)?;
+    if *votes == 0 {
+        return None;
+    }
+    let share = votes * 100 / total;
+    (share >= BIOME_MIN_SHARE_PERCENT).then_some((index, share))
 }
 
 /// World-map aggregation cell size in metres. 64 m matches a Valheim zone.
@@ -1208,6 +1298,16 @@ fn record_zdo_spatial(output: &mut ParseOutput, info: &ZdoInfo<'_>) {
             (p.z / MAP_CELL_METERS).floor() as i32,
         );
         *output.grid.entry(cell).or_default() += 1;
+        let weight = biome_weight(info.prefabs.biome_mask(info.owner_prefab_hash));
+        if weight > 0 {
+            let tally = output.biomes.entry(cell).or_default();
+            tally[BIOME_TOTAL] = tally[BIOME_TOTAL].saturating_add(weight);
+            for (index, (bit, _)) in BIOMES.iter().enumerate() {
+                if info.prefabs.biome_mask(info.owner_prefab_hash) & bit != 0 {
+                    tally[index] = tally[index].saturating_add(weight);
+                }
+            }
+        }
     }
     *output.prefabs.entry(info.owner_prefab_hash).or_default() += 1;
 }
@@ -1875,6 +1975,8 @@ pub struct ArchiveScan {
     /// ZDO density per 64 m world cell, and prefab histogram, for the map view.
     pub grid: HashMap<(i32, i32), u32>,
     pub prefabs: HashMap<i32, u32>,
+    /// Biome votes per 64 m world cell, tallied while parsing (see `record_zdo_spatial`).
+    pub biomes: HashMap<(i32, i32), BiomeTally>,
     /// `.fwl2`/`.db2` world metadata. Player ids and character names are never recorded here.
     pub world: WorldMeta,
     pub world_metadata_error: Option<String>,
@@ -1892,6 +1994,12 @@ fn merge_parse(archive: &mut ArchiveScan, output: ParseOutput) {
     archive.evidence.extend(output.evidence);
     for (cell, count) in output.grid {
         *archive.grid.entry(cell).or_default() += count;
+    }
+    for (cell, tally) in output.biomes {
+        let target = archive.biomes.entry(cell).or_default();
+        for (slot, value) in tally.iter().enumerate() {
+            target[slot] = target[slot].saturating_add(*value);
+        }
     }
     for (hash, count) in output.prefabs {
         *archive.prefabs.entry(hash).or_default() += count;
@@ -2406,8 +2514,18 @@ pub fn scan_archives(
     archive_dir: &Path,
     zstd_program: &str,
     prefab_path: &Path,
+    biome_path: Option<&Path>,
 ) -> Result<Vec<ArchiveScan>, ScanError> {
     let prefabs = PrefabNames::load(prefab_path)?;
+    // Biomes are optional: without the table the map simply has no biome layer.
+    let prefabs = match biome_path {
+        Some(path) => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| error(format!("cannot read {}: {e}", path.display())))?;
+            prefabs.with_biome_text(&text)
+        }
+        None => prefabs,
+    };
     let mut paths: Vec<PathBuf> = std::fs::read_dir(archive_dir)
         .map_err(|e| error(format!("cannot read {}: {e}", archive_dir.display())))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
@@ -3595,11 +3713,31 @@ fn browser_map_json(archives: &[ArchiveScan]) -> String {
         .map(|((x, z), count)| format!("[{x},{z},{count}]"))
         .collect::<Vec<_>>()
         .join(",");
+    // Biome layer: only cells whose evidence clears the threshold, so undeveloped, ocean and
+    // unexplored ground stays blank instead of being guessed.
+    let mut biome_cells = latest
+        .biomes
+        .iter()
+        .filter_map(|(cell, tally)| biome_verdict(tally).map(|(index, _)| (*cell, index)))
+        .collect::<Vec<_>>();
+    biome_cells.sort_by_key(|((x, z), _)| (*x, *z));
+    let biome_body = biome_cells
+        .iter()
+        .map(|((x, z), index)| format!("[{x},{z},{index}]"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let biome_names = BIOMES
+        .iter()
+        .map(|(_, name)| json_string(name))
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "{{\"cell_meters\":{},\"snapshot\":{},\"cells\":[{}]}}",
+        "{{\"cell_meters\":{},\"snapshot\":{},\"cells\":[{}],\"biomes\":[{}],\"biome_names\":[{}]}}",
         MAP_CELL_METERS,
         json_string(&browser_filename(&latest.snapshot)),
-        body
+        body,
+        biome_body,
+        biome_names
     )
 }
 
@@ -4403,7 +4541,7 @@ mod tests {
     fn spatial_aggregation_bins_by_cell_and_skips_unplottable_positions() {
         let prefabs = PrefabNames {
             names: vec![(stable_hash("stone_wall_2x1"), "stone_wall_2x1".to_string())],
-            indexed_item_data: HashMap::new(),
+            ..PrefabNames::default()
         };
         let hash = stable_hash("stone_wall_2x1");
         let mut chunk = Vec::new();
@@ -4451,7 +4589,7 @@ mod tests {
     fn current_chunk_and_legacy_zdo_are_parseable() {
         let prefabs = PrefabNames {
             names: vec![(stable_hash("Silver"), "Silver".to_string())],
-            indexed_item_data: HashMap::new(),
+            ..PrefabNames::default()
         };
         let mut chunk = Vec::new();
         push_i16(&mut chunk, 41);
@@ -5185,6 +5323,60 @@ mod tests {
                 ("activebosses", Some(3)),
             ]
         );
+    }
+
+    #[test]
+    fn prefab_biome_table_parses_names_and_ignores_unknown_biomes() {
+        let prefabs = PrefabNames::from_text("Wolf\nSilverOre\n").with_biome_text(
+            "# comment\nWolf\tmountain\nSilverOre\tmountain,icecave\nmissing-tab\n\n",
+        );
+        assert_eq!(prefabs.biome_count(), 2);
+        assert_eq!(prefabs.biome_mask(stable_hash("Wolf")), 0x04);
+        // An unknown biome name is dropped, leaving the known one.
+        assert_eq!(prefabs.biome_mask(stable_hash("SilverOre")), 0x04);
+        assert_eq!(prefabs.biome_mask(stable_hash("Absent")), 0);
+    }
+
+    #[test]
+    fn biome_verdict_needs_evidence_and_a_clear_winner() {
+        let tally = |votes: &[(usize, u32)]| {
+            let mut tally = [0u32; BIOME_COUNT + 1];
+            for (index, weight) in votes {
+                tally[*index] = *weight;
+                tally[BIOME_TOTAL] += *weight;
+            }
+            tally
+        };
+        // Two objects is below the three-object bar.
+        assert_eq!(biome_verdict(&tally(&[(0, 24)])), None);
+        // Three single-biome objects agree: mountain (index 2).
+        assert_eq!(biome_verdict(&tally(&[(2, 36)])), Some((2, 100)));
+        // A 50/50 split is not a verdict.
+        assert_eq!(biome_verdict(&tally(&[(0, 24), (2, 24)])), None);
+        // A clear majority is.
+        assert_eq!(biome_verdict(&tally(&[(0, 48), (2, 24)])), Some((0, 66)));
+        // Nothing at all stays blank.
+        assert_eq!(biome_verdict(&tally(&[])), None);
+    }
+
+    #[test]
+    fn map_json_reports_coloured_cells_only() {
+        let mut archive = browser_archive("latest", &[]);
+        let mut strong = [0u32; BIOME_COUNT + 1];
+        strong[1] = 36;
+        strong[BIOME_TOTAL] = 36;
+        archive.biomes.insert((0, 0), strong);
+        let mut weak = [0u32; BIOME_COUNT + 1];
+        weak[1] = 12;
+        weak[BIOME_TOTAL] = 12;
+        archive.biomes.insert((5, 5), weak);
+        let json = browser_report_json(std::slice::from_ref(&archive), &[]);
+        assert!(
+            json.contains("\"biomes\":[[0,0,1]]"),
+            "only the strong cell is coloured: {json}"
+        );
+        assert!(!json.contains("[5,5,"), "the thin cell stays blank");
+        assert!(json.contains("\"biome_names\":[\"meadows\",\"swamp\""));
     }
 
     #[test]
