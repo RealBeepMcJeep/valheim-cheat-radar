@@ -230,9 +230,15 @@ There is no biome estimate, and nothing stores per-cell prefab composition.
       share; otherwise leave it uncoloured — undeveloped, ocean and unexplored cells stay blank rather
       than be guessed. Implemented as `biome_verdict`; a cell popup with the counts behind the verdict
       is still to come with the UI work.
+- [ ] Tune the flora hints against real saves: after adding them, coverage rose 40% → 54% and meadows
+      went 158 → 1,291 cells (the skew is fixed), but **mountain fell 412 → 181**. Cause: with trees now
+      voting in every forested cell and a two-biome hint weighting 6, tree votes can outvote sparse
+      single-biome mountain markers (silver, obsidian, wolf, drake). Options: split Fir/Pine hints per
+      variant, or ignore hint-derived votes in cells that already hold a strong single-biome game tag.
 - [ ] Render biome fill plus density shading with a view control (Biome / Density / Both) and a legend,
       with one colour per biome (meadow green, black forest darker green, mountain white/grey, plains
       tan, swamp murky green, ashlands dark red, mistlands purple-grey, ocean deep blue).
+
 - [ ] Cluster or spiderfy markers in the map view: a dense base stacks dozens of rings on one spot,
       which is clickable but unreadable at a glance.
 - [ ] Give the ZDO-density layer an intensity gradient plus a metric scale/grid, so a hotspot reads as

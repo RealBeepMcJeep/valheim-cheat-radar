@@ -75,6 +75,40 @@ BIOME_WORDS = {
 KEEP_PREFIXES = ("_SpawnList", "SpawnArea", "SpawnSystem", "ZoneSystem", "ClutterSystem")
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.,()\- ]{1,63}$")
 
+# Flora the game's own tables no longer resolve: the scene's vegetation list references a cab whose
+# prefab bundle is absent from this build (see TODO.md), and trees are the densest biome signal a save
+# carries. These are an explicitly-labelled *heuristic* — prefix match, applied only when the game
+# table has nothing for that name, so real data always wins and this list can be deleted if the data
+# is ever recovered. Delete an entry the moment the game supplies that name.
+FLORA_HINTS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("FirTree", "PineTree", "Pinetree", "Fir ", "Pine "), ("blackforest", "deepnorth")),
+    (("Beech",), ("meadows",)),
+    (("Birch",), ("meadows", "plains")),
+    (("Oak",), ("meadows", "plains")),
+    (("BushBlueberry", "Bush", "Raspberry", "Blueberry"), ("blackforest", "meadows")),
+    (("Thistle", "Dandelion"), ("meadows", "blackforest", "plains")),
+    (("VineAsh",), ("ashlands",)),
+    (("VineGreen",), ("mistlands",)),
+    (("JotunPuffs", "Magecap", "Yggdrasil"), ("mistlands",)),
+    (("Cloudberry",), ("plains",)),
+    (("Barley", "Flax", "Turnip", "Carrot", "Onion"), ("plains",)),
+    (("Obsidian", "SilverOre", "Fenring", "Drake"), ("mountain",)),
+)
+
+
+def apply_flora_hints(names: set[str], table: dict[str, set[str]]) -> int:
+    """Fill in flora the game's tables cannot resolve, without ever overriding real data."""
+    added = 0
+    for name in names:
+        if name in table:
+            continue
+        for prefixes, biomes in FLORA_HINTS:
+            if name.startswith(prefixes):
+                table[name] = set(biomes)
+                added += 1
+                break
+    return added
+
 
 def read_tree(obj) -> dict | None:
     """Unity typetree for a MonoBehaviour, or None when the object carries no readable one."""
@@ -442,7 +476,10 @@ def main() -> int:
                 flush=True,
             )
 
+    hinted = apply_flora_hints(all_names, all_biomes)
     tagged = {name: sorted(biome) for name, biome in all_biomes.items() if biome}
+    if hinted:
+        print(f"flora hints filled in {hinted} names the game's tables could not resolve")
     out = Path(args.out_dir)
     with contextlib.suppress(OSError):
         out.mkdir(parents=True, exist_ok=True)
