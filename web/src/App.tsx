@@ -487,13 +487,15 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
           biomeContext.fillRect(cx - minX, maxZ - cz, 1, 1);
         }
         layers.current.biome = L.imageOverlay(biomeCanvas.toDataURL(), bounds, {
-          opacity: 0.85,
+          opacity: 0.9,
           interactive: false,
         }).addTo(instance);
       }
     }
+    // Density rides *under* the biome fill in "both" mode: at full strength its ember ramp hides the
+    // biome hues entirely, so it is only a highlight there.
     layers.current.density = L.imageOverlay(canvas.toDataURL(), bounds, {
-      opacity: 0.9,
+      opacity: 0.4,
       interactive: false,
     }).addTo(instance);
     if (!fitted.current) {
@@ -502,10 +504,11 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
     }
   }, [cells, biomes, cellMeters]);
 
-  // Switching layers only changes opacity, so it never rebuilds either canvas.
+  // Switching layers only changes opacity, so it never rebuilds either canvas. "Both" keeps the
+  // density as a highlight (0.4) so the biome colours underneath stay legible.
   useEffect(() => {
-    layers.current.biome?.setOpacity(layerView === 'density' ? 0 : 0.85);
-    layers.current.density?.setOpacity(layerView === 'biome' ? 0 : 0.9);
+    layers.current.biome?.setOpacity(layerView === 'density' ? 0 : 0.9);
+    layers.current.density?.setOpacity(layerView === 'biome' ? 0 : layerView === 'both' ? 0.4 : 0.9);
   }, [layerView, biomes, cells]);
 
   useEffect(() => {
