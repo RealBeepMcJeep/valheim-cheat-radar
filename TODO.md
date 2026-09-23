@@ -32,6 +32,10 @@ Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `pla
       `character-saves/`, so only the old `.fch` in this checkout was checked.
 - [x] Re-ran the `--validate` sweep over the 15 local archives (fixture expectations still pass).
 
+Working data for these checks lives outside the repository at
+`C:\Users\user\Downloads\valheim-backups2` — 17 archives, newest is the 2026-09-23 save. The older
+`valheim-backups` checkout was deleted during the migration; `reports-rust/` regenerates from either.
+
 ## Parser coverage gaps
 
 - [x] **`.db2` is parsed.** Its `[u32 version][u64 uid][u32 payload length][gzip][trailer]` payload is
@@ -71,6 +75,11 @@ Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `pla
       with a `tag` input) builds that tag and uploads `valheim-cheat-radar.html` to the release.
 
 ## Map: making it a *terrain* map
+
+- [ ] Cluster or spiderfy markers in the map view: a dense base stacks dozens of rings on one spot,
+      which is clickable but unreadable at a glance.
+- [ ] Give the ZDO-density layer an intensity gradient plus a metric scale/grid, so a hotspot reads as
+      a hotspot and its coordinates can be matched against the in-game map.
 
 Terrain is not stored in a save; the in-game map is generated procedurally from the seed by the game's
 world generator, and the client caches the result locally as gzip'd 2048² RGBA. Options if wanted later:
