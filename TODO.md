@@ -207,8 +207,24 @@ There is no biome estimate, and nothing stores per-cell prefab composition.
         matching-game-version bundle set or a community prefab→biome dataset; (c) leave trees untagged
         (honest, keeps the meadows skew). Spatial smoothing from neighbouring cells is deliberately not
         on the list: inference on inference.
-      - The 5 that do resolve are real: `HugeStone1` → plains, `Waystone` → meadows,plains,
-        `ormbunke_green_medium` → meadows, `rock_a` → plains.
+      - **Source-code check (2026-09-23)**: no code-level tree↔biome table exists — tree names appear
+        only in `PlayerStatType.cs` (chop stats), and there is no `Forest`/`m_biomeTrees` data. Biome at a
+        coordinate is *computed*: `Heightmap.GetBiome` → `WorldGenerator.GetBiome(x, z, …)` (pure function
+        of seed + position), which is the deferred accurate path, not a lookup table.
+      - **New lead worth chasing first**: `World.m_biomeData` (`AltBiomeWorldData`) — `World.cs:56`,
+        loaded via `AltBiomeWorldData.Load(binaryReader, world)` (`AltBiomeWorldData.cs:518`) with
+        `Biomes`/`BiomeTypeInfo`/`BiomeSector` and `GenerateSectors()`. If that binary stream is one of
+        the world files the scanner already reads (the `.db2` payload is the obvious candidate), the
+        **biome map may be in the save itself**, which would beat content inference outright. Next step:
+        look for biome/sector data in the `.db2` payload (we currently keep only whitelisted global
+        keys, so anything else would have been ignored).
+      - **Q14 answer: (a) approved.** Build the curated flora hint table (~15 name-pattern rules) as the
+        pragmatic route, explicitly labelled heuristic and used only where the game table is silent. If
+        the `m_biomeData` lead pans out, delete it in favour of the real data.
+      - The 5 that do resolve from the scene's tables are real: `HugeStone1` → plains, `Waystone` →
+        meadows,plains, `ormbunke_green_medium` → meadows, `rock_a` → plains.
+      - Spatial smoothing of verdicts (fill blank cells from neighbours) is *later*, if ever: inference
+        on inference.
 
 - [x] Classify a cell only with enough evidence (≥3 single-biome objects' worth of weight) and a 60%
       share; otherwise leave it uncoloured — undeveloped, ocean and unexplored cells stay blank rather
