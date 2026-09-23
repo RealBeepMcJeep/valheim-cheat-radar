@@ -196,3 +196,8 @@ footer strong { color: var(--bone); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .001ms !important; }
 }
+
+/* Map layer control and biome legend (see MapView in App.tsx). */
+.map-controls { display: flex; gap: 0.5rem; margin-bottom: 0.6rem; }
+.map-biomes { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; }
+.map-biomes .map-key i { display: inline-block; width: 0.7rem; height: 0.7rem; margin-right: 0.35rem; border: 1px solid #0d0d0c; vertical-align: middle; }

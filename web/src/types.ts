@@ -82,6 +82,10 @@ export type WorldMap = {
   snapshot: string;
   /** [cellX, cellZ, zdoCount] in `cell_meters` units. */
   cells: [number, number, number][];
+  /** [cellX, cellZ, biomeIndex] for cells whose content proves a biome; index into `biome_names`. */
+  biomes?: [number, number, number][];
+  /** Biome names in the scanner's index order, for the legend. */
+  biome_names?: string[];
 };
 
 export type Report = {

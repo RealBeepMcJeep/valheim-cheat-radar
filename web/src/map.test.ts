@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { densityColor, peakDensity, statusFill } from './map';
+import { BIOME_COLORS, biomeColor, densityColor, peakDensity, statusFill } from './map';
+
+describe('biomeColor', () => {
+  it('maps each biome index to a distinct colour and falls back for unknown indices', () => {
+    expect(new Set(BIOME_COLORS).size).toBe(BIOME_COLORS.length);
+    expect(biomeColor(0)).toBe(BIOME_COLORS[0]);
+    expect(biomeColor(BIOME_COLORS.length - 1)).toBe(BIOME_COLORS[BIOME_COLORS.length - 1]);
+    expect(biomeColor(99)).toBe('#3a3a38');
+  });
+});
 
 describe('densityColor', () => {
   it('darkens sparse cells and brightens dense ones', () => {

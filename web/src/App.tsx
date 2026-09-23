@@ -4,7 +4,7 @@ import { FailedFile, FinalReport, ScanCancelledError, ScannerWorkerClient, forma
 import { filterEvidence, sortEvidence, timelineSummary } from './view';
 import { CLUSTER_RADIUS_OPTIONS, DEFAULT_CLUSTER_RADIUS, clusterEvidence, clusterSummaryLabel, evidenceLabel } from './tree';
 import type { TreeCluster } from './tree';
-import { densityColor, peakDensity, statusFill } from './map';
+import { biomeColor, densityColor, peakDensity, statusFill } from './map';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { Evidence, Report, SortKey } from './types';
@@ -407,10 +407,13 @@ const MAP_CLUSTER_RADIUS: [number, number] = [9, 24];
 function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[]; clusters: TreeCluster[] }) {
   const host = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
-  const layers = useRef<{ density: L.ImageOverlay | null; points: L.LayerGroup | null; groups: L.LayerGroup | null }>({ density: null, points: null, groups: null });
+  const layers = useRef<{ density: L.ImageOverlay | null; biome: L.ImageOverlay | null; points: L.LayerGroup | null; groups: L.LayerGroup | null }>({ density: null, biome: null, points: null, groups: null });
   const fitted = useRef(false);
 
   const cells = useMemo(() => report.map?.cells ?? [], [report]);
+  const biomes = useMemo(() => report.map?.biomes ?? [], [report]);
+  const biomeNames = report.map?.biome_names ?? [];
+  const [layerView, setLayerView] = useState<'biome' | 'density' | 'both'>('both');
   const cellMeters = report.map?.cell_meters || MAP_CELL_FALLBACK;
 
   useEffect(() => {
@@ -432,7 +435,7 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
     return () => {
       instance.remove();
       map.current = null;
-      layers.current = { density: null, points: null, groups: null };
+      layers.current = { density: null, biome: null, points: null, groups: null };
       fitted.current = false;
     };
   }, []);
@@ -441,7 +444,9 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
     const instance = map.current;
     if (!instance) return;
     layers.current.density?.remove();
+    layers.current.biome?.remove();
     layers.current.density = null;
+    layers.current.biome = null;
     if (!cells.length) return;
 
     let minX = Infinity;
@@ -469,6 +474,24 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
       [(maxZ + 1) * cellMeters, minX * cellMeters],
       [minZ * cellMeters, (maxX + 1) * cellMeters],
     ];
+    // Biome layer under the density shading: one pixel per cell that holds enough evidence for a
+    // verdict, so undeveloped, ocean and unexplored ground stays blank instead of being guessed.
+    if (biomes.length) {
+      const biomeCanvas = document.createElement('canvas');
+      biomeCanvas.width = canvas.width;
+      biomeCanvas.height = canvas.height;
+      const biomeContext = biomeCanvas.getContext('2d');
+      if (biomeContext) {
+        for (const [cx, cz, index] of biomes) {
+          biomeContext.fillStyle = biomeColor(index);
+          biomeContext.fillRect(cx - minX, maxZ - cz, 1, 1);
+        }
+        layers.current.biome = L.imageOverlay(biomeCanvas.toDataURL(), bounds, {
+          opacity: 0.85,
+          interactive: false,
+        }).addTo(instance);
+      }
+    }
     layers.current.density = L.imageOverlay(canvas.toDataURL(), bounds, {
       opacity: 0.9,
       interactive: false,
@@ -477,7 +500,13 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
       instance.fitBounds(bounds, { padding: [18, 18] });
       fitted.current = true;
     }
-  }, [cells, cellMeters]);
+  }, [cells, biomes, cellMeters]);
+
+  // Switching layers only changes opacity, so it never rebuilds either canvas.
+  useEffect(() => {
+    layers.current.biome?.setOpacity(layerView === 'density' ? 0 : 0.85);
+    layers.current.density?.setOpacity(layerView === 'biome' ? 0 : 0.9);
+  }, [layerView, biomes, cells]);
 
   useEffect(() => {
     const instance = map.current;
@@ -524,8 +553,15 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
   }
 
   return <div className="map-panel">
-    <div className="map-host" ref={host} role="application" aria-label="World map of evidence and object density" />
+    <div className="map-host" ref={host} role="application" aria-label="World map of evidence, object density and biome" />
+    <div className="map-controls" role="group" aria-label="Map layers">
+      {([['both', 'Biome + density'], ['biome', 'Biome'], ['density', 'Density']] as const).map(([value, label]) => (
+        <button key={value} type="button" className={`tab ${layerView === value ? 'selected' : ''}`} aria-pressed={layerView === value} onClick={() => setLayerView(value)}>{label}</button>
+      ))}
+    </div>
     <div className="map-legend">
+      {biomeNames.length > 0 && layerView !== 'density' && <p className="map-biomes">{biomeNames.map((name, index) => <span key={name} className="map-key"><i style={{ background: biomeColor(index) }} />{name} ({biomes.filter(([, , cell]) => cell === index).length})</span>)}</p>}
+      {biomeNames.length > 0 && <p><strong>Biomes</strong> are inferred from what the save actually contains — creatures, structures and plants the game tags with a biome. A {cellMeters} m cell is only coloured when its objects supply at least three single-biome objects' worth of weighted evidence and a 60% share for one biome; thinner cells stay blank, so undeveloped, ocean and unexplored ground is never guessed.</p>}
       <p><strong>Density</strong> is the ZDO count per {cellMeters} m cell in the newest save, so it shows where the world actually has content. Terrain is not stored in a save, so this is a content map, not satellite imagery.</p>
       <p className="map-keys"><span className="map-key map-key-cluster" />cluster (click for contents) <span className="map-key map-key-new" />new <span className="map-key map-key-persisted" />persisted <span className="map-key map-key-removed" />removed / cleared</p>
       <p className="map-hint">Drag to pan · scroll or pinch to zoom · click any marker to see what is inside.</p>

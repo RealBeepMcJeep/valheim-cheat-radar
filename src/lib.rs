@@ -4154,7 +4154,8 @@ impl BrowserScanner {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {
-            prefabs: PrefabNames::from_text(include_str!("../prefab_names.txt")),
+            prefabs: PrefabNames::from_text(include_str!("../prefab_names.txt"))
+                .with_biome_text(include_str!("../prefab_biomes.txt")),
             archives: Vec::new(),
             characters: Vec::new(),
         }

@@ -32,6 +32,30 @@ cargo run --release -- --archive-dir C:\path\to\backups --output-dir reports-rus
 See `RUST_README.md` for CLI details, `WEB_README.md` for the app, and `FORMAT.md` for parsed
 format notes. `TODO.md` is the living backlog; `CHANGELOG.md` is the history.
 
+## Game data tables
+
+Two committed files are generated from the game itself — never from anyone's save — by
+`tools/extract-prefab-data.py`:
+
+| file | contents | source |
+| --- | --- | --- |
+| `prefab_names.txt` | one prefab name per line; the scanner hashes each name exactly as the game does, so a save's prefab hashes resolve to names | every bundle under `<Valheim>/valheim_Data/StreamingAssets/SoftRef/Bundles/` |
+| `prefab_biomes.txt` | `<prefab name><TAB><biome>[,<biome>...]` | the biome-tagged serialized fields in those bundles: `ZoneSystem.m_vegetation` / `m_locations` / `m_clutter`, `SpawnSystemList.m_spawners`, `ClutterSystem.m_clutter`, and any prefab carrying a biome-tagged component |
+
+The biome bits and their names are code rather than data: `public enum Biome` and `BiomeToString` in
+the decompiled `Heightmap.cs` (`Decompiled/Valheim/Heightmap.cs:16` and `:1366`). The map colours a
+64 m cell only when its objects supply at least three single-biome objects' worth of weighted evidence
+and a 60% share for one biome; thinner cells stay blank, so undeveloped, ocean and unexplored ground is
+never guessed. Details in `FORMAT.md`.
+
+Regenerate (needs the game installed and `pip install UnityPy`):
+
+```text
+python tools/extract-prefab-data.py \
+  --bundles "I:/SteamLibrary/steamapps/common/Valheim/valheim_Data/StreamingAssets/SoftRef/Bundles" \
+  --out-dir . --cache "%TEMP%/vcradar-prefab-cache"
+```
+
 ## Privacy
 
 Input saves are read-only and never leave the machine. Reports use logical source labels instead of

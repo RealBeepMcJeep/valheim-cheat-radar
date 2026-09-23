@@ -13,6 +13,27 @@ export function densityColor(count: number, max: number): string {
   return `rgb(${red},${green},${blue})`;
 }
 
+/**
+ * Biome fills, in the scanner's index order (see `BIOMES` in `src/lib.rs` and `FORMAT.md`).
+ * Deliberately muted so evidence markers and the density shading stay readable over them.
+ */
+export const BIOME_COLORS = [
+  '#6f8f4e', // meadows
+  '#4c5f42', // swamp
+  '#c9d2d6', // mountain
+  '#2f4a2c', // blackforest
+  '#c9b271', // plains
+  '#6d3630', // ashlands
+  '#bcd6e2', // deepnorth
+  '#1f3d55', // ocean
+  '#6c5b7d', // mistlands
+] as const;
+
+/** Colour for a biome index, with a neutral fallback for an index we do not know. */
+export function biomeColor(index: number): string {
+  return BIOME_COLORS[index] ?? '#3a3a38';
+}
+
 export function statusFill(status: string): string {
   switch (status) {
     case 'new': return '#ee8a48';
