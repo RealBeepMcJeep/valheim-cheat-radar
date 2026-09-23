@@ -16,4 +16,6 @@ Current chunks must be v41, the legacy database must be v37, and legacy item ver
 
 Outputs are deterministic and include `CHEAT_AUDIT.md`, `cheat-audit.json`, `world-evidence.csv`, and `character-evidence.csv`. The world CSV is a consolidated table over the most recent scanned snapshots, keyed by exact evidence identity excluding stack; each row has per-snapshot presence and stack columns. Reports use logical source labels only, never local absolute paths, account IDs, or raw player IDs.
 
+World metadata found beside the chunks is reported too: the Markdown report gains a *World metadata* table (world name, version, seed, player count, progression-flag count) plus the latest snapshot's progression flags, and the JSON carries `world_name`, `world_seed`, `world_player_count`, `global_keys`, and `world_metadata_error` per archive. Steam ids and character names from the world file are never emitted.
+
 The scanner excludes `dathost_settings_backup.json`, reports custom-data key names only, and does not implement save mutation or binary editing. Cross-save object identity is approximate because chunk records omit persistent ZDOIDs. Character lineage uses embedded playerID internally and reports only a same-lineage label.

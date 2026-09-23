@@ -12,6 +12,9 @@ lto = "thin"
 codegen-units = 1
 
 [dependencies]
+# `.db2` world metadata is a gzip stream. Pure-Rust backend so the native CLI and the WASM module
+# share one parser instead of shelling out to `gzip` or reimplementing inflate.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.92"

@@ -1,3 +1,4 @@
+use flate2::read::GzDecoder;
 use std::collections::HashMap;
 use std::fmt;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1874,6 +1875,9 @@ pub struct ArchiveScan {
     /// ZDO density per 64 m world cell, and prefab histogram, for the map view.
     pub grid: HashMap<(i32, i32), u32>,
     pub prefabs: HashMap<i32, u32>,
+    /// `.fwl2`/`.db2` world metadata. Player ids and character names are never recorded here.
+    pub world: WorldMeta,
+    pub world_metadata_error: Option<String>,
 }
 
 fn merge_parse(archive: &mut ArchiveScan, output: ParseOutput) {
@@ -1891,6 +1895,243 @@ fn merge_parse(archive: &mut ArchiveScan, output: ParseOutput) {
     }
     for (hash, count) in output.prefabs {
         *archive.prefabs.entry(hash).or_default() += count;
+    }
+}
+
+/// A world-progression flag read from the `.db2` global keys (`defeated_*`, `killed*`, `activebosses`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalKey {
+    pub key: String,
+    pub value: Option<i64>,
+}
+
+/// World-level metadata stored beside the chunks: `.fwl2` carries the world name, seed and player
+/// count; `.db2` carries the progression flags. Player ids and character names are read only far
+/// enough to count them and are deliberately never kept.
+#[derive(Debug, Clone, Default)]
+pub struct WorldMeta {
+    pub version: Option<u32>,
+    pub name: Option<String>,
+    pub seed: Option<String>,
+    pub player_count: Option<usize>,
+    pub global_keys: Vec<GlobalKey>,
+}
+
+const MAX_WORLD_META_BYTES: u64 = 1024 * 1024;
+const MAX_DB2_ENTRY_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_DB2_PLAIN_BYTES: usize = 64 * 1024 * 1024;
+const MAX_GLOBAL_KEYS: usize = 64;
+
+/// Global-key namespaces worth reporting. Anything else in the payload is ignored, which keeps
+/// unrelated strings (including player names) out of reports.
+const GLOBAL_KEY_PREFIXES: [&str; 6] = [
+    "defeated_",
+    "killed",
+    "activebosses",
+    "event_",
+    "hildir",
+    "bosshildir",
+];
+
+fn read_bounded(reader: &mut impl Read, limit: u64) -> Result<Vec<u8>, ScanError> {
+    let mut bytes = Vec::new();
+    reader.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(error(format!("entry exceeds the {limit} byte limit")));
+    }
+    Ok(bytes)
+}
+
+fn meta_u32(bytes: &[u8], offset: usize) -> Result<u32, ScanError> {
+    let slice = bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| error("truncated world metadata"))?;
+    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+/// Read one `[u8 length][utf-8 bytes]` string, advancing `offset`.
+fn read_pstring(bytes: &[u8], offset: &mut usize) -> Result<String, ScanError> {
+    let slice = read_pstring_bytes(bytes, offset)?;
+    std::str::from_utf8(slice)
+        .map(str::to_string)
+        .map_err(|_| error("world metadata string is not utf-8"))
+}
+
+/// Same, but only printable ASCII is accepted. The `.db2` payload interleaves binary sections, so a
+/// length byte read from a binary run must not be allowed to consume (and hide) the real keys.
+fn read_ascii_pstring(bytes: &[u8], offset: &mut usize) -> Result<String, ScanError> {
+    let slice = read_pstring_bytes(bytes, offset)?;
+    if !slice.iter().all(|byte| (0x20..=0x7e).contains(byte)) {
+        return Err(error("world metadata string is not printable ascii"));
+    }
+    Ok(String::from_utf8_lossy(slice).into_owned())
+}
+
+fn read_pstring_bytes<'a>(bytes: &'a [u8], offset: &mut usize) -> Result<&'a [u8], ScanError> {
+    let length = *bytes
+        .get(*offset)
+        .ok_or_else(|| error("truncated world metadata string"))? as usize;
+    *offset += 1;
+    let slice = bytes
+        .get(*offset..*offset + length)
+        .ok_or_else(|| error("truncated world metadata string"))?;
+    *offset += length;
+    Ok(slice)
+}
+
+/// `.fwl2`: `[u32 declared length][u32 world version][name][seed][u64 uid]…[player list]`.
+///
+/// Only the *number* of players is returned: the entries themselves are Steam ids and character
+/// names, which this scanner must never report.
+pub fn parse_fwl2_bytes(bytes: &[u8]) -> Result<WorldMeta, ScanError> {
+    if bytes.len() < 8 {
+        return Err(error("fwl2 is too short"));
+    }
+    let declared = meta_u32(bytes, 0)? as usize;
+    if declared != bytes.len() - 4 {
+        return Err(error(format!(
+            "fwl2 declares {declared} bytes but carries {}",
+            bytes.len() - 4
+        )));
+    }
+    let version = meta_u32(bytes, 4)?;
+    let mut offset = 8;
+    let name = read_pstring(bytes, &mut offset)?;
+    let seed = read_pstring(bytes, &mut offset)?;
+    Ok(WorldMeta {
+        version: Some(version),
+        name: Some(name),
+        seed: Some(seed),
+        player_count: detect_player_count(bytes, offset),
+        global_keys: Vec::new(),
+    })
+}
+
+/// The player list is four length-prefixed strings per player. Rather than trusting a fixed offset
+/// (which our own reverse engineering could have got wrong), find the offset where that shape
+/// consumes the rest of the file exactly; if no offset fits, report no count instead of a guess.
+fn detect_player_count(bytes: &[u8], from: usize) -> Option<usize> {
+    for start in from..bytes.len().min(from + 64) {
+        let mut offset = start;
+        let mut count = 0usize;
+        loop {
+            if offset == bytes.len() {
+                return Some(count);
+            }
+            let mut first_field = 0usize;
+            let mut ok = true;
+            for slot in 0..4 {
+                match read_pstring(bytes, &mut offset) {
+                    Ok(value) if slot == 0 => first_field = value.len(),
+                    Ok(_) => {}
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok || first_field == 0 {
+                break;
+            }
+            count += 1;
+        }
+    }
+    None
+}
+
+/// `.db2`: `[u32 version][u64 uid][u32 payload length][gzip payload][trailer]`.
+///
+/// Only the progression flags are returned; the payload also holds unrelated world state.
+pub fn parse_db2_bytes(bytes: &[u8]) -> Result<WorldMeta, ScanError> {
+    if bytes.len() < 20 {
+        return Err(error("db2 is too short"));
+    }
+    let version = meta_u32(bytes, 0)?;
+    let payload_len = meta_u32(bytes, 12)? as usize;
+    let payload = bytes
+        .get(16..16 + payload_len)
+        .ok_or_else(|| error(format!("db2 payload of {payload_len} bytes does not fit")))?;
+    let mut plain = Vec::new();
+    GzDecoder::new(payload)
+        .take(MAX_DB2_PLAIN_BYTES as u64 + 1)
+        .read_to_end(&mut plain)
+        .map_err(|cause| error(format!("db2 gzip: {cause}")))?;
+    if plain.len() > MAX_DB2_PLAIN_BYTES {
+        return Err(error("db2 payload exceeds the decompressed limit"));
+    }
+    Ok(WorldMeta {
+        version: Some(version),
+        global_keys: global_keys(&plain),
+        ..WorldMeta::default()
+    })
+}
+
+/// Walk the payload's length-prefixed strings, resynchronising one byte at a time so binary sections
+/// do not stop the walk, and keep only progression flags.
+fn global_keys(plain: &[u8]) -> Vec<GlobalKey> {
+    let mut keys: Vec<GlobalKey> = Vec::new();
+    let mut offset = 0;
+    while offset < plain.len() && keys.len() < MAX_GLOBAL_KEYS {
+        let before = offset;
+        match read_ascii_pstring(plain, &mut offset) {
+            Ok(text) => {
+                if let Some(key) = global_key(&text) {
+                    if !keys.iter().any(|existing| existing.key == key.key) {
+                        keys.push(key);
+                    }
+                }
+            }
+            Err(_) => offset = before + 1,
+        }
+    }
+    keys
+}
+
+fn global_key(text: &str) -> Option<GlobalKey> {
+    let (key, value) = match text.split_once(' ') {
+        Some((key, value)) => (key, Some(value.parse::<i64>().ok()?)),
+        None => (text, None),
+    };
+    if key.is_empty() || key.len() > 48 {
+        return None;
+    }
+    if !key
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return None;
+    }
+    if !GLOBAL_KEY_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+    {
+        return None;
+    }
+    Some(GlobalKey {
+        key: key.to_string(),
+        value,
+    })
+}
+
+/// Metadata parse failures are recorded, never fatal: the audit of the world itself still completes.
+fn merge_world_meta(archive: &mut ArchiveScan, result: Result<WorldMeta, ScanError>) {
+    match result {
+        Ok(meta) => {
+            if meta.version.is_some() {
+                archive.world.version = meta.version;
+            }
+            if meta.name.is_some() {
+                archive.world.name = meta.name;
+            }
+            if meta.seed.is_some() {
+                archive.world.seed = meta.seed;
+            }
+            if meta.player_count.is_some() {
+                archive.world.player_count = meta.player_count;
+            }
+            archive.world.global_keys.extend(meta.global_keys);
+        }
+        Err(cause) => archive.world_metadata_error = Some(cause.0),
     }
 }
 
@@ -1953,6 +2194,14 @@ pub fn scan_tar_bytes(
             )?;
             archive.format = "legacy_v37".to_string();
             merge_parse(&mut archive, output);
+        } else if internal_path.ends_with(".fwl2") {
+            let parsed =
+                read_bounded(body, MAX_WORLD_META_BYTES).and_then(|bytes| parse_fwl2_bytes(&bytes));
+            merge_world_meta(&mut archive, parsed);
+        } else if internal_path.ends_with(".db2") {
+            let parsed =
+                read_bounded(body, MAX_DB2_ENTRY_BYTES).and_then(|bytes| parse_db2_bytes(&bytes));
+            merge_world_meta(&mut archive, parsed);
         }
         Ok(())
     })?;
@@ -2103,6 +2352,14 @@ pub fn scan_archive(
             )?;
             archive.format = "legacy_v37".to_string();
             merge_parse(&mut archive, output);
+        } else if internal_path.ends_with(".fwl2") {
+            let parsed =
+                read_bounded(body, MAX_WORLD_META_BYTES).and_then(|bytes| parse_fwl2_bytes(&bytes));
+            merge_world_meta(&mut archive, parsed);
+        } else if internal_path.ends_with(".db2") {
+            let parsed =
+                read_bounded(body, MAX_DB2_ENTRY_BYTES).and_then(|bytes| parse_db2_bytes(&bytes));
+            merge_world_meta(&mut archive, parsed);
         }
         Ok(())
     });
@@ -2425,7 +2682,7 @@ fn report_json_with_characters(archives: &[ArchiveScan], characters: &[Character
         .iter()
         .map(|archive| {
             format!(
-                "{{\"snapshot\":{},\"archive\":{},\"format\":{},\"zdo_count\":{},\"decoded_item_count\":{},\"item_count\":{},\"direct_item_count\":{},\"container_item_count\":{},\"indexed_item_count\":{},\"zdo_cheated_count\":{},\"station_queued_cheated_count\":{},\"metadata_total\":{},\"metadata_entries\":{},\"player_profiles_present\":{}}}",
+                "{{\"snapshot\":{},\"archive\":{},\"format\":{},\"zdo_count\":{},\"decoded_item_count\":{},\"item_count\":{},\"direct_item_count\":{},\"container_item_count\":{},\"indexed_item_count\":{},\"zdo_cheated_count\":{},\"station_queued_cheated_count\":{},\"metadata_total\":{},\"metadata_entries\":{},\"player_profiles_present\":{},{}}}",
                 json_string(&archive.snapshot),
                 json_string(&archive.archive),
                 json_string(&archive.format),
@@ -2440,6 +2697,7 @@ fn report_json_with_characters(archives: &[ArchiveScan], characters: &[Character
                 archive.metadata_total.map(|value| value.to_string()).unwrap_or_else(|| "null".to_string()),
                 archive.metadata_entries,
                 archive.player_profiles_present,
+                json_world(archive),
             )
         })
         .collect::<Vec<_>>()
@@ -2480,6 +2738,41 @@ fn report_json_with_characters(archives: &[ArchiveScan], characters: &[Character
         archive_json,
         evidence,
         character_json,
+    )
+}
+
+fn json_world(archive: &ArchiveScan) -> String {
+    let keys = archive
+        .world
+        .global_keys
+        .iter()
+        .map(|key| {
+            format!(
+                "{{\"key\":{},\"value\":{}}}",
+                json_string(&key.key),
+                key.value
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "\"world_version\":{},\"world_name\":{},\"world_seed\":{},\"world_player_count\":{},\"global_keys\":[{}],\"world_metadata_error\":{}",
+        archive
+            .world
+            .version
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        json_opt_string(archive.world.name.as_deref()),
+        json_opt_string(archive.world.seed.as_deref()),
+        archive
+            .world
+            .player_count
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        keys,
+        json_opt_string(archive.world_metadata_error.as_deref()),
     )
 }
 
@@ -2830,6 +3123,54 @@ fn report_markdown_with_characters(
             archive.zdo_cheated_count,
             archive.station_queued_cheated_count
         ));
+    }
+    let worlds = archives
+        .iter()
+        .filter(|archive| archive.world.version.is_some() || archive.world.name.is_some())
+        .collect::<Vec<_>>();
+    if !worlds.is_empty() {
+        output.push_str("\n## World metadata\n\n| Snapshot | World | Version | Seed | Players | Progression flags |\n|---|---|---:|---|---:|---:|\n");
+        for archive in &worlds {
+            output.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} |\n",
+                archive.snapshot,
+                archive
+                    .world
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                opt_display(archive.world.version),
+                archive
+                    .world
+                    .seed
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                opt_display(archive.world.player_count),
+                archive.world.global_keys.len()
+            ));
+        }
+        if let Some(latest) = worlds.last() {
+            if !latest.world.global_keys.is_empty() {
+                output.push_str(&format!(
+                    "\nProgression flags in the latest snapshot (`{}`):\n\n| Flag | Value |\n|---|---:|\n",
+                    latest.snapshot
+                ));
+                for key in &latest.world.global_keys {
+                    output.push_str(&format!("| {} | {} |\n", key.key, opt_display(key.value)));
+                }
+            }
+            output.push_str("\nPlayer names and ids from the world file are never reported.\n");
+        }
+        for archive in archives
+            .iter()
+            .filter(|archive| archive.world_metadata_error.is_some())
+        {
+            output.push_str(&format!(
+                "\n- world metadata error in {}: {}\n",
+                archive.snapshot,
+                archive.world_metadata_error.clone().unwrap_or_default()
+            ));
+        }
     }
     if let (Some(old), Some(new)) = (previous, latest) {
         output.push_str(&format!("\n## Latest snapshot change\n\nCompared with **{}**, latest **{}** has ZDO count {} -> {}, item hits {} -> {}, ZDO flags {} -> {}, and queued flags {} -> {}.\n\nMatching is approximate because chunked records omit persistent ZDOID.\n", old.snapshot, new.snapshot, old.zdo_count, new.zdo_count, old.item_count, new.item_count, old.zdo_cheated_count, new.zdo_cheated_count, old.station_queued_cheated_count, new.station_queued_cheated_count));
@@ -3273,7 +3614,7 @@ pub fn browser_report_json(archives: &[ArchiveScan], characters: &[CharacterScan
         .iter()
         .map(|archive| {
             format!(
-                "{{\"archive\":{},\"snapshot\":{},\"format\":{},\"zdo_count\":{},\"decoded_item_count\":{},\"item_count\":{},\"direct_item_count\":{},\"container_item_count\":{},\"indexed_item_count\":{},\"zdo_cheated_count\":{},\"station_queued_cheated_count\":{},\"metadata_total\":{},\"metadata_entries\":{},\"player_profiles_present\":{}}}",
+                "{{\"archive\":{},\"snapshot\":{},\"format\":{},\"zdo_count\":{},\"decoded_item_count\":{},\"item_count\":{},\"direct_item_count\":{},\"container_item_count\":{},\"indexed_item_count\":{},\"zdo_cheated_count\":{},\"station_queued_cheated_count\":{},\"metadata_total\":{},\"metadata_entries\":{},\"player_profiles_present\":{},{}}}",
                 json_string(&browser_filename(&archive.archive)),
                 json_string(&browser_filename(&archive.snapshot)),
                 json_string(&archive.format),
@@ -3288,6 +3629,7 @@ pub fn browser_report_json(archives: &[ArchiveScan], characters: &[CharacterScan
                 archive.metadata_total.map(|value| value.to_string()).unwrap_or_else(|| "null".to_string()),
                 archive.metadata_entries,
                 archive.player_profiles_present,
+                json_world(archive),
             )
         })
         .collect::<Vec<_>>()
@@ -4731,6 +5073,132 @@ mod tests {
             "character clean"
         )
         .is_err());
+    }
+
+    fn pstring(value: &str) -> Vec<u8> {
+        let mut bytes = vec![value.len() as u8];
+        bytes.extend(value.as_bytes());
+        bytes
+    }
+
+    /// Mirrors the real `.fwl2` layout: declared length, world version, name, seed, uid, two small
+    /// header words, a flag byte, the player count, then four strings per player.
+    fn fwl2_bytes(name: &str, seed: &str, players: &[(&str, &str, &str, &str)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend(41u32.to_le_bytes());
+        body.extend(pstring(name));
+        body.extend(pstring(seed));
+        body.extend(1_234_567_890_123u64.to_le_bytes());
+        body.extend(0u32.to_le_bytes());
+        body.extend(2u32.to_le_bytes());
+        body.extend(1u32.to_le_bytes());
+        body.push(0);
+        body.extend((players.len() as u32).to_le_bytes());
+        for (player_id, character, player, uid) in players {
+            for value in [player_id, character, player, uid] {
+                body.extend(pstring(value));
+            }
+        }
+        let mut bytes = (body.len() as u32).to_le_bytes().to_vec();
+        bytes.extend(body);
+        bytes
+    }
+
+    /// Mirrors the real `.db2` layout: version, uid, payload length, gzip member, 40-byte trailer.
+    fn db2_bytes(keys: &[&str]) -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        let mut plain = Vec::new();
+        plain.extend(0x2e70u32.to_le_bytes());
+        plain.extend(0u32.to_le_bytes());
+        plain.extend((keys.len() as u32).to_le_bytes());
+        for key in keys {
+            plain.extend(pstring(key));
+        }
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&plain).unwrap();
+        let gz = encoder.finish().unwrap();
+        let mut bytes = 41u32.to_le_bytes().to_vec();
+        bytes.extend(0u64.to_le_bytes());
+        bytes.extend((gz.len() as u32).to_le_bytes());
+        bytes.extend(&gz);
+        bytes.extend([0u8; 40]);
+        bytes
+    }
+
+    #[test]
+    fn world_metadata_reads_name_seed_and_player_count_but_drops_identities() {
+        let bytes = fwl2_bytes(
+            "TestWorld",
+            "AbCdEf1234",
+            &[
+                (
+                    "Steam_76561190000000001",
+                    "Owchar",
+                    "Owchar",
+                    "AAAABBBBCCCCDDDD",
+                ),
+                (
+                    "Steam_76561190000000002",
+                    "second",
+                    "second",
+                    "EEEEFFFFGGGGHHHH",
+                ),
+            ],
+        );
+        let meta = parse_fwl2_bytes(&bytes).unwrap();
+        assert_eq!(meta.version, Some(41));
+        assert_eq!(meta.name.as_deref(), Some("TestWorld"));
+        assert_eq!(meta.seed.as_deref(), Some("AbCdEf1234"));
+        assert_eq!(meta.player_count, Some(2));
+        let rendered = format!("{meta:?}");
+        assert!(!rendered.contains("Steam_"), "ids must not survive parsing");
+        assert!(
+            !rendered.contains("Owchar"),
+            "names must not survive parsing"
+        );
+    }
+
+    #[test]
+    fn db2_global_keys_keep_only_progression_namespaces() {
+        let bytes = db2_bytes(&[
+            "defeated_eikthyr",
+            "killedtroll",
+            "activebosses 3",
+            "seph",
+            "Steam_76561190000000001",
+            "worldmodifier 1",
+        ]);
+        let meta = parse_db2_bytes(&bytes).unwrap();
+        assert_eq!(meta.version, Some(41));
+        let keys = meta
+            .global_keys
+            .iter()
+            .map(|key| (key.key.as_str(), key.value))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                ("defeated_eikthyr", None),
+                ("killedtroll", None),
+                ("activebosses", Some(3)),
+            ]
+        );
+    }
+
+    #[test]
+    fn world_metadata_failures_are_recorded_rather_than_fatal() {
+        let mut archive = ArchiveScan::default();
+        merge_world_meta(&mut archive, parse_fwl2_bytes(&[1, 2, 3]));
+        assert!(archive.world_metadata_error.is_some());
+        assert!(archive.world.name.is_none());
+        let rendered = format!(
+            "{}:{}",
+            json_world(&archive),
+            browser_report_json(std::slice::from_ref(&archive), &[])
+        );
+        assert!(rendered.contains("world_metadata_error"));
     }
 
     #[test]

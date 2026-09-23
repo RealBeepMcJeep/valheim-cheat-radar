@@ -1,7 +1,13 @@
 # Plan: grow the project up (migrate, publish, deploy)
 
-Status: **decided — ready to execute** (two open items noted at the end)
-Owner: pi-agent · Created: 2026-09-22
+Status: **done — completed 2026-09-22**
+Owner: pi-agent · Created: 2026-09-22 · Completed: 2026-09-22 (`2c22859` → `ba33ac2`)
+
+> **Outcome.** Phases 0–4 landed in the first public commit `2c22859` (42 files, fresh history, no
+> save-derived data). Phase 5 followed in `48b57dc` (single-file build) with release automation in
+> `b781cee`–`53c59ec`, and the outcome was recorded in `c784a57`. Live at
+> <https://realbeepmcjeep.github.io/valheim-cheat-radar/>; the single-file download is attached to
+> release `v0.1.0`. Everything below is the record of how it was done, not pending work.
 
 ## Goal
 

@@ -23,20 +23,26 @@ Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `pla
 
 ## Verify the audit
 
-- [ ] Re-scan fresh backups after cleanup and confirm no world-resident or character-resident cheat
-      flags remain.
-- [ ] Re-run the full `cargo run --release -- --validate` sweep over the local archives; the last
-      full run predates the recent parser changes.
+- [x] Re-scanned the fresh backups in `C:\Users\user\Downloads\valheim-backups2` (17 archives;
+      newest is the 2026-09-23 save). **Result: not clean.** The newest backup carries 142 cheated
+      ZDO flags plus 109 direct-item and 26 container records; 140 of those records are new since
+      2026-09-22, and `defeated_goblinking` appeared in the world's progression flags. The flagged
+      content is still present and growing, so any cleanup did not hold.
+- [ ] Character-resident verification needs a current profile: the newest backups have no
+      `character-saves/`, so only the old `.fch` in this checkout was checked.
+- [x] Re-ran the `--validate` sweep over the 15 local archives (fixture expectations still pass).
 
 ## Parser coverage gaps
 
-- [ ] **`.db2` is not parsed at all.** It is a gzip-compressed blob holding the world's global keys
-      (`killedtroll`, `defeated_*`, `activebosses`, …) — genuine progression/cheat signal that the
-      scanner currently ignores entirely.
-- [ ] **`.fwl2` is not parsed.** It carries the world name and seed (and a player list that must never
-      be reported). The seed would let a user render a real external map.
+- [x] **`.db2` is parsed.** Its `[u32 version][u64 uid][u32 payload length][gzip][trailer]` payload is
+      inflated and the progression flags (`defeated_*`, `killed*`, `activebosses`, `event_*`, `hildir*`,
+      `bosshildir*`) are reported. Only whitelisted namespaces are kept, so unrelated payload strings
+      cannot reach a report, and a parse failure is recorded per archive instead of aborting the scan.
+- [x] **`.fwl2` is parsed** for the world version, name, seed and player *count*. The player list's
+      Steam ids and character names are read only far enough to count entries and are never retained.
 - [ ] `prefab_names.txt` holds only 56 names while a real world contains ~700 distinct prefab hashes,
-      so most objects render as `<unknown>`. Generate a full name table from the decompiled source.
+      so most objects render as `<unknown>`. Needs a decompiled prefab table (or a community name
+      list) as input; the prototype's generator is gone with the old checkout.
 
 ## Browser / WebAssembly
 
@@ -58,6 +64,9 @@ Living backlog. Completed work is recorded in `CHANGELOG.md`; plans live in `pla
       the list. Chunk grouping itself is unsuitable — one chunk spans ~14 distinct sites and splits
       ~10% of true 30 m neighbours.
 - [ ] Broader browser compatibility coverage.
+- [ ] Surface world metadata in the browser UI: the world name, seed, player count and progression
+      flags are in the browser report JSON but nothing renders them yet (the seed also unlocks an
+      opt-in terrain/minimap overlay, see below).
 - [x] Attach the single-file build automatically: publishing a release (or dispatching the workflow
       with a `tag` input) builds that tag and uploads `valheim-cheat-radar.html` to the release.
 

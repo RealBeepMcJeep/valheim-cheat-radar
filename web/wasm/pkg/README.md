@@ -12,6 +12,10 @@ Two front ends over one Rust parser:
   analytics. Live at <https://realbeepmcjeep.github.io/valheim-cheat-radar/>.
 - **`src/`** — the native CLI and library, for scripting over a directory of archives.
 
+There is also a **single-file download**: [Releases](https://github.com/RealBeepMcJeep/valheim-cheat-radar/releases)
+has one self-contained `.html` (app, worker, and WASM inlined) that runs by double-clicking, with
+nothing installed and no network access.
+
 ## Quick start
 
 ```text

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `.fwl2` world metadata: world version, name, seed, and player *count*. The player list's Steam ids
+  and character names are read only far enough to count entries and are never retained or reported.
+- `.db2` progression flags (`defeated_*`, `killed*`, `activebosses`, `event_*`, `hildir*`,
+  `bosshildir*`), inflated from the file's gzip payload. Only whitelisted key namespaces are kept, so
+  unrelated payload strings cannot reach a report, and unknown shapes become a per-archive metadata
+  error rather than a failed scan or a guess.
+- World metadata in the reports: a *World metadata* table plus the latest snapshot's progression
+  flags in Markdown, and `world_name` / `world_version` / `world_seed` / `world_player_count` /
+  `global_keys` / `world_metadata_error` per archive in both JSON reporters.
+
+### Notes
+
+- First runtime dependency: `flate2` with its pure-Rust backend, so gzip is handled by a standard
+  implementation shared by the native CLI and the WASM build instead of a hand-rolled inflate or a
+  `gzip` child process.
+
 ## 0.1.0 — initial public release
 
 ### Added

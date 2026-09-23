@@ -8,6 +8,9 @@
 - Legacy item version 106 and compact item/inventory versions 107 and 109 are explicitly supported; unknown/future versions fail closed.
 - Coordinates, chunk filename/version/size/revision, ZDO ordinal, owner hash/name, key hash/name, item fields, grid, quality, stack, variant, crafter name, world level, and custom-data key names are retained internally.
 - `world-evidence.csv` consolidates logical evidence identity across the most recent scanned snapshots. Identity matching excludes stack and uses kind, owner hash, exact float-bit position, key, item, grid, quality, variant, crafter, and worldLevel. Stack is observation-only in per-snapshot columns.
+- `.fwl2` is parsed for the world version, name, seed and player *count*. Its player list holds Steam ids and character names; they are read only far enough to count the entries and are never retained or reported.
+- `.db2` is parsed for progression flags. Its payload is `[u32 version][u64 uid][u32 payload length][gzip member][trailer]`, and only the key namespaces the audit needs — `defeated_*`, `killed*`, `activebosses`, `event_*`, `hildir*`, `bosshildir*` — are kept, so unrelated payload strings (names, ids, world state) cannot reach a report. Unknown shapes are reported as a metadata error rather than guessed.
+- World metadata never aborts a scan: a `.fwl2`/`.db2` that cannot be parsed records an error on that archive while the world audit still completes.
 
 ## Character profiles
 
