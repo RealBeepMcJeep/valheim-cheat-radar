@@ -274,8 +274,10 @@ before an edited world is uploaded or it overwrites it on its next save.
 
 - [x] Keep scanning read-only by default; never overwrite an uploaded save.
 - [ ] Offer an explicit "scrub a copy" workflow for world and character saves, with a preview/diff and a
-      downloadable audit log. *(World done in the CLI with an audit log; still missing: character
-      `.fch` scrubbing, and the browser workflow with a preview.)*
+      downloadable audit log. *(Worlds done, in the CLI and — experimental — in the browser, which
+      returns the input's own format and file name plus the audit log. Still missing: character
+      `.fch` scrubbing, a per-row preview, and compression closer to the host's level, since
+      `ruzstd` only has its fastest level: 25 MiB vs 18 MiB on the owner's save.)*
 - [ ] Let users choose between clearing cheat bits and removing contaminated item/object records;
       explain propagation and gameplay consequences.
 - [ ] Recompute required wrappers/checksums (including `.fch` SHA-512), preserve unknown fields, and

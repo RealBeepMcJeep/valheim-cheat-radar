@@ -15,6 +15,15 @@
 
 ### Added
 
+- **Experimental scrub in the browser:** after a scan, "Clear cheat flags in a copy" (behind an
+  acknowledgement) hands back a `.tar.zst`, `.tar` or v41 `.chunk` in the same format and under the
+  same file name as the input. For a backup, the decompressed tar is patched in place, so every entry
+  (admin lists, host settings, world files), header and timestamp is identical and only the flag
+  bytes differ; it is recompressed as one zstd frame with an XXH64 checksum (pure-Rust `ruzstd`,
+  about zstd level 1, so larger than the host's file), then decoded again with fzstd and compared
+  before it is offered. Checked on the owner's newest save with the real `zstd` and `tar`: the zstd
+  frame passes `zstd -t`, 637 bytes change (all 1 -> 0), the 85-entry tar listing is identical, and the
+  world files match the CLI scrub's byte for byte. Legacy `.db` worlds and `.fch` profiles are refused.
 - **Mode A scrub (CLI):** `--scrub-world ARCHIVE --scrub-out DIR` clears every cheat flag the scanner
   finds — `cheated`/`cheatedQueued[+slot]` ZDO ints and each item's cheated bit — on a copy of a v41
   world, keeping every object. Each patch is a same-length in-place byte change, checked against the
@@ -56,6 +65,8 @@
 
 ### Notes
 
+- Second runtime dependency: `ruzstd`, pure Rust, for the browser scrub's zstd output (+~110 KB of
+  WASM).
 - First runtime dependency: `flate2` with its pure-Rust backend, so gzip is handled by a standard
   implementation shared by the native CLI and the WASM build instead of a hand-rolled inflate or a
   `gzip` child process.

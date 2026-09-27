@@ -1,7 +1,7 @@
 import { Decompress } from 'fzstd';
-import init, { BrowserScanner } from '../wasm/pkg/valheim_backup_cheat_scanner.js';
+import init, { BrowserScanner, zstd_compress_bytes } from '../wasm/pkg/valheim_backup_cheat_scanner.js';
 import { errorMessage } from './errors';
-import { MAX_DECOMPRESSED_BYTES, MAX_FILE_BYTES, type FailedFile, type FinalReport, type ScanProgress, type WorkerRequest, type WorkerResponse, type WorkerResponseBody } from './scan';
+import { MAX_DECOMPRESSED_BYTES, MAX_FILE_BYTES, scrubKind, type FailedFile, type FinalReport, type ScanProgress, type ScrubResult, type WorkerRequest, type WorkerResponse, type WorkerResponseBody } from './scan';
 
 const COMPRESSED_CHUNK_BYTES = 1024 * 1024;
 // SAFETY: this module is only ever loaded as a dedicated module Worker, where
@@ -9,14 +9,14 @@ const COMPRESSED_CHUNK_BYTES = 1024 * 1024;
 // DOM lib types `self` as Window, so the narrowed shape is asserted here.
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null;
-  postMessage: (message: WorkerResponse) => void;
+  postMessage: (message: WorkerResponse, transfer?: Transferable[]) => void;
 };
 
 let scannerPromise: Promise<BrowserScanner> | null = null;
 let queue = Promise.resolve();
 
-function post(id: number, response: WorkerResponseBody): void {
-  scope.postMessage({ id, ...response } as WorkerResponse);
+function post(id: number, response: WorkerResponseBody, transfer: Transferable[] = []): void {
+  scope.postMessage({ id, ...response } as WorkerResponse, transfer);
 }
 
 async function getScanner(): Promise<BrowserScanner> {
@@ -90,7 +90,7 @@ async function report(id: number, failures: FailedFile[]): Promise<void> {
   }
 }
 
-function decompressStreaming(buffer: ArrayBuffer, id: number): ArrayBuffer {
+function decompressStreaming(buffer: ArrayBuffer, id: number, label = 'decompressing'): ArrayBuffer {
   const input = new Uint8Array(buffer);
   const chunks: Uint8Array[] = [];
   let outputBytes = 0;
@@ -113,7 +113,7 @@ function decompressStreaming(buffer: ArrayBuffer, id: number): ArrayBuffer {
         progress: {
           stage: 'decompressing',
           percent: 5 + Math.round((end / input.byteLength) * 30),
-          message: `decompressing ${Math.round((end / input.byteLength) * 100)}%`,
+          message: `${label} ${Math.round((end / input.byteLength) * 100)}%`,
         },
       });
     }
@@ -146,6 +146,46 @@ async function scan(id: number, name: string, buffer: ArrayBuffer, modifiedUnixM
   post(id, { type: 'progress', progress: { stage: 'complete', percent: 100, message: 'complete' } satisfies ScanProgress });
 }
 
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+// Experimental: a copy of the input with every cheat flag cleared, in the input's own format.
+async function scrub(id: number, name: string, buffer: ArrayBuffer): Promise<ScrubResult> {
+  if (buffer.byteLength > MAX_FILE_BYTES) {
+    throw new Error(`file is too large (${Math.ceil(buffer.byteLength / 1048576)} MiB; limit ${MAX_FILE_BYTES / 1048576} MiB)`);
+  }
+  const kind = scrubKind(name);
+  if (!kind) throw new Error('Only .tar.zst, .tar and v41 .chunk world files can be scrubbed; legacy .db worlds and character profiles are not supported.');
+  const scanner = await getScanner();
+  const progress = (stage: ScanProgress['stage'], percent: number, message: string) => post(id, { type: 'progress', progress: { stage, percent, message } });
+  const tar = kind === 'tar.zst' ? decompressStreaming(buffer, id) : buffer;
+  progress('scrubbing', 40, 'clearing flags and verifying');
+  const scrubbed = kind === 'chunk' ? scanner.scrub_chunk(name, new Uint8Array(tar)) : scanner.scrub_tar(new Uint8Array(tar));
+  const zdoFlags = scrubbed.zdo_flags();
+  const itemBits = scrubbed.item_bits();
+  const auditJson = scrubbed.audit_json();
+  const auditMarkdown = scrubbed.audit_markdown();
+  const zdoCount = scrubbed.zdo_count();
+  let bytes = scrubbed.take_bytes();
+  scrubbed.free();
+  if (zdoFlags + itemBits === 0) throw new Error('No cheat flags found in this file; there is nothing to clear.');
+  if (kind === 'tar.zst') {
+    progress('compressing', 60, 'compressing (zstd)');
+    const compressed = zstd_compress_bytes(bytes);
+    // Decode with fzstd, an independent implementation, before anything leaves the worker.
+    const roundTrip = new Uint8Array(decompressStreaming(compressed.buffer as ArrayBuffer, id, 'verifying'));
+    if (!sameBytes(roundTrip, bytes)) throw new Error('compressed copy did not decompress to the scrubbed tar; nothing was saved');
+    bytes = compressed;
+  }
+  progress('complete', 100, 'complete');
+  return { name, bytes: bytes.buffer as ArrayBuffer, auditJson, auditMarkdown, zdoFlags, itemBits, zdoCount };
+}
+
 function canonical(id: number, index: number): Promise<void> {
   return getScanner()
     .then((scanner) => scanner.set_canonical(index))
@@ -156,6 +196,11 @@ function canonical(id: number, index: number): Promise<void> {
 function handle(request: WorkerRequest): Promise<void> {
   if (request.type === 'report') return report(request.id, request.failures);
   if (request.type === 'canonical') return canonical(request.id, request.index);
+  if (request.type === 'scrub') {
+    return scrub(request.id, request.name, request.buffer)
+      .then((result) => post(request.id, { type: 'scrubbed', result }, [result.bytes]))
+      .catch((error: unknown) => post(request.id, { type: 'error', message: errorMessage(error) }));
+  }
   return scan(request.id, request.name, request.buffer, request.modifiedUnixMillis, request.inputId)
     .then(() => post(request.id, { type: 'scanned' }))
     .catch((error: unknown) => post(request.id, { type: 'error', message: errorMessage(error) }));

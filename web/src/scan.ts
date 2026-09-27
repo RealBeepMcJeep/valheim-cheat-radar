@@ -3,13 +3,24 @@ import type { Report } from './types';
 export const MAX_FILE_BYTES = 128 * 1024 * 1024;
 export const MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
 
-export type ScanStage = 'reading' | 'decompressing' | 'parsing' | 'complete';
+export type ScanStage = 'reading' | 'decompressing' | 'parsing' | 'scrubbing' | 'compressing' | 'verifying' | 'complete';
 export type ScanProgress = { stage: ScanStage; percent: number; message: string };
 export type FailedFile = { name: string; error: string };
 export type FinalReport = { json: string; csv: string; markdown: string };
+/** A scrubbed copy in the same format and under the same name as the input file. */
+export type ScrubResult = { name: string; bytes: ArrayBuffer; auditJson: string; auditMarkdown: string; zdoFlags: number; itemBits: number; zdoCount: number };
+
+/** Which world inputs the experimental scrub can hand back in their own format. */
+export function scrubKind(name: string): 'tar.zst' | 'tar' | 'chunk' | null {
+  if (/\.tar\.zst$/i.test(name)) return 'tar.zst';
+  if (/\.tar$/i.test(name)) return 'tar';
+  if (/\.chunk$/i.test(name)) return 'chunk';
+  return null;
+}
 
 type WorkerRequestBody =
   | { type: 'scan'; name: string; modifiedUnixMillis: number; inputId: number; buffer: ArrayBuffer }
+  | { type: 'scrub'; name: string; buffer: ArrayBuffer }
   | { type: 'canonical'; index: number }
   | { type: 'report'; failures: FailedFile[] };
 export type WorkerRequest = WorkerRequestBody & { id: number };
@@ -18,6 +29,7 @@ export type WorkerResponseBody =
   | { type: 'progress'; progress: ScanProgress }
   | { type: 'scanned' }
   | { type: 'report'; report: FinalReport }
+  | { type: 'scrubbed'; result: ScrubResult }
   | { type: 'error'; message: string };
 export type WorkerResponse = WorkerResponseBody & { id: number };
 
@@ -30,7 +42,7 @@ export interface ScannerWorkerLike {
 }
 
 type Pending = {
-  resolve: (value: void | FinalReport) => void;
+  resolve: (value: void | FinalReport | ScrubResult) => void;
   reject: (error: Error) => void;
   onProgress?: (progress: ScanProgress) => void;
 };
@@ -73,6 +85,16 @@ export class ScannerWorkerClient {
     ) as Promise<void>;
   }
 
+  async scrubFile(file: File, onProgress?: (progress: ScanProgress) => void): Promise<ScrubResult> {
+    if (file.size > MAX_FILE_BYTES) {
+      throw new Error(`file is too large (${formatBytes(file.size)}; limit ${MAX_FILE_BYTES / 1048576} MiB)`);
+    }
+    const generation = this.generation;
+    const buffer = await file.arrayBuffer();
+    if (generation !== this.generation) throw new ScanCancelledError();
+    return this.send({ type: 'scrub', name: file.name, buffer }, [buffer], onProgress) as Promise<ScrubResult>;
+  }
+
   setCanonical(index: number): Promise<void> {
     return this.send({ type: 'canonical', index }) as Promise<void>;
   }
@@ -108,11 +130,11 @@ export class ScannerWorkerClient {
     return worker;
   }
 
-  private send(request: WorkerRequestBody, transfer: Transferable[] = [], onProgress?: (progress: ScanProgress) => void): Promise<void | FinalReport> {
+  private send(request: WorkerRequestBody, transfer: Transferable[] = [], onProgress?: (progress: ScanProgress) => void): Promise<void | FinalReport | ScrubResult> {
     const worker = this.ensureWorker();
     const id = this.nextRequestId++;
     const message: WorkerRequest = { ...request, id };
-    return new Promise<void | FinalReport>((resolve, reject) => {
+    return new Promise<void | FinalReport | ScrubResult>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, onProgress });
       try {
         worker.postMessage(message, transfer);
@@ -134,6 +156,7 @@ export class ScannerWorkerClient {
     this.pending.delete(response.id);
     if (response.type === 'error') pending.reject(new Error(response.message));
     else if (response.type === 'scanned') pending.resolve();
+    else if (response.type === 'scrubbed') pending.resolve(response.result);
     else pending.resolve(response.report);
   }
 

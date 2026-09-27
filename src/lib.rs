@@ -371,7 +371,6 @@ pub enum ScrubPatchKind {
 }
 
 impl ScrubPatchKind {
-    #[cfg(not(target_arch = "wasm32"))]
     fn as_str(self) -> &'static str {
         match self {
             ScrubPatchKind::ZdoIntFlag => "zdo_int_flag",
@@ -2585,6 +2584,8 @@ const MAX_CHUNK_FILE_BYTES: u64 = 128 * 1024 * 1024;
 pub struct ScrubbedFile {
     pub path: String,
     pub bytes: Vec<u8>,
+    /// Where this file's contents start inside the decompressed input tar.
+    pub tar_offset: u64,
 }
 
 /// Result of `scrub_world_tar_bytes`: the world's files with cheat flags cleared, the exact list
@@ -2625,6 +2626,7 @@ pub fn scrub_world_tar_bytes(
     struct ChunkFile {
         path: String,
         bytes: Vec<u8>,
+        tar_offset: u64,
     }
     let mut tar = TarStream::new(bytes);
     let mut metadata: Vec<ChunkMeta> = Vec::new();
@@ -2640,6 +2642,7 @@ pub fn scrub_world_tar_bytes(
             // Outside worlds_local/: not part of the world save, never copied or touched.
             return Ok(());
         };
+        let tar_offset = (bytes.len() - body.reader.len()) as u64;
         if internal_path.ends_with(".chunks") {
             let raw = read_bounded(body, MAX_WORLD_META_BYTES)?;
             let (version, total, entries) = parse_chunks_metadata(&mut &raw[..])?;
@@ -2653,24 +2656,28 @@ pub fn scrub_world_tar_bytes(
             passthrough_files.push(ScrubbedFile {
                 path: world_path,
                 bytes: raw,
+                tar_offset,
             });
         } else if internal_path.ends_with(".chunk") {
             let raw = read_bounded(body, MAX_CHUNK_FILE_BYTES)?;
             chunk_files.push(ChunkFile {
                 path: world_path,
                 bytes: raw,
+                tar_offset,
             });
         } else if internal_path.ends_with(".fwl2") || internal_path.ends_with(".ok") {
             let raw = read_bounded(body, MAX_WORLD_META_BYTES)?;
             passthrough_files.push(ScrubbedFile {
                 path: world_path,
                 bytes: raw,
+                tar_offset,
             });
         } else if internal_path.ends_with(".db2") {
             let raw = read_bounded(body, MAX_DB2_ENTRY_BYTES)?;
             passthrough_files.push(ScrubbedFile {
                 path: world_path,
                 bytes: raw,
+                tar_offset,
             });
         } else {
             // A legacy .fwl/.db world, or anything else under worlds_local/ this scrubber does not
@@ -2726,6 +2733,7 @@ pub fn scrub_world_tar_bytes(
         outcome.files.push(ScrubbedFile {
             path: chunk.path.clone(),
             bytes: scrubbed,
+            tar_offset: chunk.tar_offset,
         });
     }
     if metadata_total != outcome.zdo_count as i32 {
@@ -2741,6 +2749,119 @@ pub fn scrub_world_tar_bytes(
         .patches
         .sort_by(|a, b| (&a.file_path, a.offset).cmp(&(&b.file_path, b.offset)));
     Ok(outcome)
+}
+
+/// Mode A on a whole backup tar: returns the input with exactly the audited flag bytes cleared and
+/// every other byte - tar headers, padding, end marker, and files outside the world such as admin
+/// lists or host settings - identical, so the copy can go back wherever the original came from.
+/// Each patch is applied at its file's offset inside the tar, the result must agree byte for byte
+/// with `scrub_world_tar_bytes`'s own verified per-chunk output, and the patched tar is rescanned.
+pub fn scrub_tar_in_place(
+    bytes: &[u8],
+    prefabs: &PrefabNames,
+) -> Result<(Vec<u8>, ScrubOutcome), ScanError> {
+    let outcome = scrub_world_tar_bytes(bytes, prefabs)?;
+    if outcome
+        .files
+        .windows(2)
+        .any(|pair| pair[0].path == pair[1].path)
+    {
+        return Err(error(
+            "the tar holds two copies of one world file, refusing to scrub",
+        ));
+    }
+    let mut patched = bytes.to_vec();
+    let mut covered = std::collections::HashSet::new();
+    for patch in &outcome.patches {
+        let file = outcome
+            .files
+            .iter()
+            .find(|file| file.path == patch.file_path)
+            .ok_or_else(|| error(format!("{}: patched file is missing", patch.file_path)))?;
+        let width = patch_width(patch.kind);
+        if patch.offset + width > file.bytes.len() as u64 {
+            return Err(error(format!(
+                "{}: patch runs past the file",
+                patch.file_path
+            )));
+        }
+        let shifted = ScrubPatch {
+            offset: file.tar_offset + patch.offset,
+            ..patch.clone()
+        };
+        apply_patch(&mut patched, &shifted, &patch.file_path)?;
+        covered.extend(shifted.offset..shifted.offset + width);
+    }
+    for file in &outcome.files {
+        let start = file.tar_offset as usize;
+        if patched.get(start..start + file.bytes.len()) != Some(&file.bytes[..]) {
+            return Err(error(format!(
+                "{}: patched tar disagrees with the scrubbed file",
+                file.path
+            )));
+        }
+    }
+    for (index, (before, after)) in bytes.iter().zip(&patched).enumerate() {
+        if before != after && !covered.contains(&(index as u64)) {
+            return Err(error(format!(
+                "tar byte {index} changed outside every audited patch"
+            )));
+        }
+    }
+    let rescanned = scan_tar_bytes(&patched, "scrubbed.tar", prefabs)?;
+    if !rescanned.evidence.is_empty() || rescanned.zdo_count != outcome.zdo_count {
+        return Err(error(format!(
+            "rescan of the scrubbed tar found {} cheat evidence entries and {} ZDOs (expected 0 and {})",
+            rescanned.evidence.len(),
+            rescanned.zdo_count,
+            outcome.zdo_count
+        )));
+    }
+    Ok((patched, outcome))
+}
+
+/// Mode A on one standalone v41 `.chunk` file, verified the same way as a chunk inside a tar.
+pub fn scrub_chunk_in_place(
+    bytes: &[u8],
+    name: &str,
+    prefabs: &PrefabNames,
+) -> Result<(Vec<u8>, ScrubOutcome), ScanError> {
+    let mut patches = Vec::new();
+    let before = parse_chunk_reader(
+        &mut &bytes[..],
+        bytes.len() as u64,
+        "",
+        "",
+        name,
+        prefabs,
+        &[],
+        &mut patches,
+    )?;
+    for patch in &mut patches {
+        patch.file_path = name.to_string();
+    }
+    let mut patched = bytes.to_vec();
+    for patch in &patches {
+        apply_patch(&mut patched, patch, name)?;
+    }
+    verify_scrub(name, bytes, &patched, &patches, &before, prefabs)?;
+    let outcome = ScrubOutcome {
+        files: vec![ScrubbedFile {
+            path: name.to_string(),
+            bytes: patched.clone(),
+            tar_offset: 0,
+        }],
+        patches,
+        zdo_count: before.zdo_count,
+    };
+    Ok((patched, outcome))
+}
+
+/// One zstd frame with an XXH64 content checksum and no stored content size, the same shape as a
+/// host's `.tar.zst` backup. Level is ruzstd's "Fastest" (about zstd level 1), so the file is
+/// somewhat larger than the host's, and any zstd reader decodes it the same way.
+pub fn zstd_compress(bytes: &[u8]) -> Vec<u8> {
+    ruzstd::encoding::compress_to_vec(bytes, ruzstd::encoding::CompressionLevel::Fastest)
 }
 
 /// Overwrites one patch's bytes in `buffer`, after confirming the bytes actually there still match
@@ -2833,7 +2954,6 @@ fn verify_scrub(
 
 /// Deterministic, privacy-safe (no absolute paths, no player ids) JSON audit of every patch a
 /// scrub applied.
-#[cfg(not(target_arch = "wasm32"))]
 fn scrub_audit_json(outcome: &ScrubOutcome) -> String {
     let mut json = String::new();
     json.push_str("{\"zdo_count\":");
@@ -2862,7 +2982,6 @@ fn scrub_audit_json(outcome: &ScrubOutcome) -> String {
 }
 
 /// Same audit as `scrub_audit_json`, as a Markdown table for a human to read.
-#[cfg(not(target_arch = "wasm32"))]
 fn scrub_audit_markdown(outcome: &ScrubOutcome) -> String {
     fn cell(value: &str) -> String {
         value.replace('|', "\\|").replace('\n', " ")
@@ -4903,6 +5022,72 @@ pub fn browser_report_markdown(archives: &[ArchiveScan], characters: &[Character
     output
 }
 
+/// A scrubbed copy plus its audit, handed to the browser worker.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub struct BrowserScrub {
+    bytes: Vec<u8>,
+    audit_json: String,
+    audit_markdown: String,
+    zdo_flags: usize,
+    item_bits: usize,
+    zdo_count: u64,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BrowserScrub {
+    fn new((bytes, outcome): (Vec<u8>, ScrubOutcome)) -> Self {
+        let zdo_flags = outcome
+            .patches
+            .iter()
+            .filter(|patch| patch.kind == ScrubPatchKind::ZdoIntFlag)
+            .count();
+        Self {
+            bytes,
+            audit_json: scrub_audit_json(&outcome),
+            audit_markdown: scrub_audit_markdown(&outcome),
+            zdo_flags,
+            item_bits: outcome.patches.len() - zdo_flags,
+            zdo_count: outcome.zdo_count,
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl BrowserScrub {
+    /// The scrubbed bytes; moved out, so a second call returns an empty array.
+    pub fn take_bytes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
+    }
+
+    pub fn audit_json(&self) -> String {
+        self.audit_json.clone()
+    }
+
+    pub fn audit_markdown(&self) -> String {
+        self.audit_markdown.clone()
+    }
+
+    pub fn zdo_flags(&self) -> usize {
+        self.zdo_flags
+    }
+
+    pub fn item_bits(&self) -> usize {
+        self.item_bits
+    }
+
+    pub fn zdo_count(&self) -> f64 {
+        self.zdo_count as f64
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn zstd_compress_bytes(bytes: &[u8]) -> Vec<u8> {
+    zstd_compress(bytes)
+}
+
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub struct BrowserScanner {
@@ -4934,6 +5119,20 @@ impl BrowserScanner {
 
     pub fn add_file(&mut self, name: &str, bytes: &[u8]) -> Result<(), JsValue> {
         self.add_file_with_modified_unix(name, bytes, f64::NAN)
+    }
+
+    /// Experimental Mode A scrub of a decompressed backup tar; never touches the scan results.
+    pub fn scrub_tar(&self, bytes: &[u8]) -> Result<BrowserScrub, JsValue> {
+        scrub_tar_in_place(bytes, &self.prefabs)
+            .map(BrowserScrub::new)
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    /// Experimental Mode A scrub of one standalone v41 chunk file.
+    pub fn scrub_chunk(&self, name: &str, bytes: &[u8]) -> Result<BrowserScrub, JsValue> {
+        scrub_chunk_in_place(bytes, name, &self.prefabs)
+            .map(BrowserScrub::new)
+            .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     pub fn add_file_with_modified_unix(
@@ -5610,6 +5809,83 @@ mod tests {
         let rescanned = parse_chunk_bytes(scrubbed_chunk, "00_00__1_1.chunk", &prefabs).unwrap();
         assert!(rescanned.evidence.is_empty());
         assert_eq!(rescanned.zdo_count, 1);
+    }
+
+    #[test]
+    fn scrub_tar_in_place_changes_only_flag_bytes_and_keeps_non_world_files() {
+        let prefabs = PrefabNames {
+            names: vec![(stable_hash("piece_chest"), "piece_chest".to_string())],
+            ..PrefabNames::default()
+        };
+        let mut tar = Vec::new();
+        append_tar_entry(
+            &mut tar,
+            "SaveDir/worlds_local/Dedicated/_main.1.chunks",
+            &chunks_meta_bytes(1),
+        );
+        append_tar_entry(
+            &mut tar,
+            "SaveDir/worlds_local/Dedicated/00_00__1_1.chunk",
+            &scrub_test_chunk(),
+        );
+        append_tar_entry(&mut tar, "SaveDir/adminlist.txt", b"not part of the world");
+        finish_tar(&mut tar);
+
+        let (patched, outcome) = scrub_tar_in_place(&tar, &prefabs).unwrap();
+        assert_eq!(patched.len(), tar.len());
+        let chunk_start = outcome
+            .files
+            .iter()
+            .find(|file| file.path.ends_with(".chunk"))
+            .unwrap()
+            .tar_offset as usize;
+        let changed: Vec<usize> = tar
+            .iter()
+            .zip(&patched)
+            .enumerate()
+            .filter(|(_, (before, after))| before != after)
+            .map(|(index, _)| index - chunk_start)
+            .collect();
+        assert_eq!(
+            changed,
+            [29, 55],
+            "only the two flag bytes, inside the chunk"
+        );
+        let admin = b"not part of the world";
+        assert!(patched.windows(admin.len()).any(|window| window == admin));
+    }
+
+    #[test]
+    fn scrub_chunk_in_place_clears_a_standalone_chunk() {
+        let chunk = scrub_test_chunk();
+        let (patched, outcome) =
+            scrub_chunk_in_place(&chunk, "00_00__1_1.chunk", &PrefabNames::default()).unwrap();
+        assert_eq!(outcome.patches.len(), 2);
+        let changed: Vec<usize> = chunk
+            .iter()
+            .zip(&patched)
+            .enumerate()
+            .filter(|(_, (before, after))| before != after)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(changed, [29, 55]);
+    }
+
+    #[test]
+    fn zstd_compress_round_trips_with_a_checksummed_frame() {
+        let data: Vec<u8> = (0..200_000u32)
+            .flat_map(|n| (n % 251).to_le_bytes())
+            .collect();
+        let compressed = zstd_compress(&data);
+        assert_eq!(compressed[..4], [0x28, 0xb5, 0x2f, 0xfd], "zstd magic");
+        assert_ne!(compressed[4] & 0x04, 0, "content checksum flag set");
+        assert!(compressed.len() < data.len());
+        let mut decoded = Vec::new();
+        ruzstd::decoding::StreamingDecoder::new(&compressed[..])
+            .unwrap()
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, data);
     }
 
     #[test]

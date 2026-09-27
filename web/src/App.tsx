@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
-import { FailedFile, FinalReport, ScanCancelledError, ScannerWorkerClient, formatBytes, parseReport } from './scan';
+import { FailedFile, FinalReport, ScanCancelledError, ScannerWorkerClient, formatBytes, parseReport, scrubKind } from './scan';
+import type { ScrubResult } from './scan';
 import { filterEvidence, multiArchiveHint, sortEvidence, timelineSummary } from './view';
 import { CLUSTER_RADIUS_OPTIONS, DEFAULT_CLUSTER_RADIUS, clusterEvidence, clusterSummaryLabel, evidenceLabel, spatialSort } from './tree';
 import type { ClusterOrder, TreeCluster } from './tree';
@@ -32,6 +33,17 @@ type QueueItem = {
 };
 
 type Tab = 'world' | 'characters' | 'timeline';
+type ScrubState = { status: 'running'; progress: string } | { status: 'done'; result: ScrubResult } | { status: 'error'; error: string };
+
+// Revoking right after click can cancel a large download in some browsers, so revoke later.
+function saveFile(content: BlobPart, name: string, type: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
 const ACCEPTED = '.tar.zst,.tar,.db,.chunk,.fch,.fch.old,.fch.bak';
 const KINDS = ['all', 'zdo_cheated', 'station_queued_cheated', 'direct_item_data', 'container_inventory', 'indexed_item_data'];
@@ -51,6 +63,8 @@ export function App() {
   const [progressMessage, setProgressMessage] = useState('');
   const [exports, setExports] = useState<FinalReport | null>(null);
   const [copied, setCopied] = useState('');
+  const [scrubAcknowledged, setScrubAcknowledged] = useState(false);
+  const [scrubs, setScrubs] = useState<Record<number, ScrubState>>({});
   const client = useRef<ScannerWorkerClient | null>(null);
   const nextId = useRef(1);
   const runGeneration = useRef(0);
@@ -153,6 +167,27 @@ export function App() {
     }
   };
 
+  const scrubItem = async (item: QueueItem) => {
+    if (busy || !scrubAcknowledged) return;
+    const run = ++runGeneration.current;
+    setBusy(true);
+    setScrubs((current) => ({ ...current, [item.id]: { status: 'running', progress: 'starting' } }));
+    try {
+      const scanner = client.current ??= new ScannerWorkerClient();
+      const result = await scanner.scrubFile(item.file, (progress) => {
+        if (run !== runGeneration.current) return;
+        setScrubs((current) => ({ ...current, [item.id]: { status: 'running', progress: progress.message } }));
+      });
+      setScrubs((current) => ({ ...current, [item.id]: { status: 'done', result } }));
+    } catch (error) {
+      if (run !== runGeneration.current) return;
+      const detail = error instanceof ScanCancelledError ? 'Cancelled.' : error instanceof Error ? error.message : 'Scrub failed.';
+      setScrubs((current) => ({ ...current, [item.id]: { status: 'error', error: detail } }));
+    } finally {
+      if (run === runGeneration.current) setBusy(false);
+    }
+  };
+
   const cancel = () => {
     if (!busy) return;
     client.current?.cancel();
@@ -171,6 +206,8 @@ export function App() {
     setQuery('');
     setKind('all');
     setStatus('all');
+    setScrubs({});
+    setScrubAcknowledged(false);
   };
 
   const download = (extension: 'json' | 'csv' | 'md') => {
@@ -178,12 +215,7 @@ export function App() {
     const content = extension === 'json'
       ? exports.json
       : extension === 'csv' ? exports.csv : exports.markdown;
-    const url = URL.createObjectURL(new Blob([content], { type: extension === 'json' ? 'application/json' : 'text/plain' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `valheim-cheat-radar.${extension}`;
-    link.click();
-    URL.revokeObjectURL(url);
+    saveFile(content, `valheim-cheat-radar.${extension}`, extension === 'json' ? 'application/json' : 'text/plain');
   };
 
   const copy = async (value: string) => {
@@ -252,14 +284,58 @@ export function App() {
         {tab === 'characters' && <CharacterView report={report} id="report-characters" onSelectCanonical={selectCanonical} />}
         {tab === 'timeline' && <TimelineView report={report} id="report-timeline" copy={copy} copied={copied} />}
         <section className="downloads panel" aria-labelledby="download-heading">
-          <div><p className="eyebrow">EXPORT</p><h2 id="download-heading">Take the report with you</h2><p>Downloads contain parsed evidence only. Saving is not implemented in this MVP.</p></div>
+          <div><p className="eyebrow">EXPORT</p><h2 id="download-heading">Take the report with you</h2><p>Report downloads contain parsed evidence only.</p></div>
           <div className="download-actions"><button className="button" type="button" onClick={() => download('json')}>JSON</button><button className="button" type="button" onClick={() => download('csv')}>CSV</button><button className="button" type="button" onClick={() => download('md')}>Markdown</button></div>
         </section>
+        {queue.some((item) => item.status === 'done' && scrubKind(item.file.name)) && <ScrubPanel items={queue.filter((item) => item.status === 'done' && scrubKind(item.file.name))} scrubs={scrubs} acknowledged={scrubAcknowledged} setAcknowledged={setScrubAcknowledged} busy={busy} onScrub={scrubItem} />}
       </>}
 
-      <footer><strong>Unofficial fan-made tool.</strong> Valheim is a trademark of its respective owner. No game assets, logos, fonts, or official screenshots are distributed here. This page never edits a save; clearing cheat flags on a copy is available in the command-line tool.</footer>
+      <footer><strong>Unofficial fan-made tool.</strong> Valheim is a trademark of its respective owner. No game assets, logos, fonts, or official screenshots are distributed here. This page never changes your files; the experimental scrub only creates a new copy.</footer>
     </div>
   );
+}
+
+type ScrubPanelProps = {
+  items: QueueItem[];
+  scrubs: Record<number, ScrubState>;
+  acknowledged: boolean;
+  setAcknowledged: (value: boolean) => void;
+  busy: boolean;
+  onScrub: (item: QueueItem) => void;
+};
+
+function ScrubPanel({ items, scrubs, acknowledged, setAcknowledged, busy, onScrub }: ScrubPanelProps) {
+  return <section className="scrub panel" aria-labelledby="scrub-heading">
+    <div className="section-heading">
+      <div><p className="eyebrow">EXPERIMENTAL</p><h2 id="scrub-heading">Clear cheat flags in a copy</h2></div>
+      <span className="experimental-badge">EXPERIMENTAL</span>
+    </div>
+    <p className="explanation">Makes a new copy of a world backup with every cheat flag this scan found cleared, and keeps every object. Your original file is never changed. The copy has the original's format and exact file name, so it can go back where it came from: inside a <code>.tar.zst</code> every file and byte is the same except the flags, and it is recompressed at a faster zstd level, so it is somewhat larger than the original.</p>
+    <ul className="scrub-limits">
+      <li>Only flagged objects are cleared. Anything spawned with <code>bypasscheatchecks</code> on carries no flag.</li>
+      <li>Items in players' own inventories live in their character files, not the world, and come back with them.</li>
+      <li>Clearing a flag erases the evidence. Keep the original backup and the audit log.</li>
+      <li>Stop the server before restoring the copy, or it overwrites it with the world it holds in memory.</li>
+      <li>This is experimental: try the copy on a test or local server first.</li>
+    </ul>
+    <label className="scrub-acknowledge"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.currentTarget.checked)} /> I have kept the original backup and understand this is experimental.</label>
+    <ul className="scrub-list">{items.map((item) => {
+      const state = scrubs[item.id];
+      return <li key={item.id}>
+        <div className="scrub-row"><span className="queue-name">{item.file.name}</span><button className="button" type="button" disabled={!acknowledged || busy} onClick={() => onScrub(item)}>Clear flags in a copy</button></div>
+        {state?.status === 'running' && <p className="scrub-status" aria-live="polite">{state.progress}</p>}
+        {state?.status === 'error' && <p className="inline-error" role="alert">{state.error}</p>}
+        {state?.status === 'done' && <div className="scrub-result">
+          <p>Cleared {state.result.zdoFlags.toLocaleString()} object flag(s) and {state.result.itemBits.toLocaleString()} item flag(s) across {state.result.zdoCount.toLocaleString()} objects. The copy was re-scanned (no flags left) and checked byte for byte before download. {formatBytes(state.result.bytes.byteLength)} (original {formatBytes(item.file.size)}).</p>
+          <div className="download-actions">
+            <button className="button primary" type="button" onClick={() => saveFile(state.result.bytes, state.result.name, 'application/octet-stream')}>Download {state.result.name}</button>
+            <button className="button" type="button" onClick={() => saveFile(state.result.auditMarkdown, `${state.result.name}.scrub-audit.md`, 'text/markdown')}>Audit (Markdown)</button>
+            <button className="button" type="button" onClick={() => saveFile(state.result.auditJson, `${state.result.name}.scrub-audit.json`, 'application/json')}>Audit (JSON)</button>
+          </div>
+        </div>}
+      </li>;
+    })}</ul>
+  </section>;
 }
 
 function Queue({ items }: { items: QueueItem[] }) {

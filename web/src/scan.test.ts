@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { errorMessage } from './errors';
-import { ScannerWorkerClient, ScanCancelledError, type ScannerWorkerLike, type WorkerRequest, type WorkerResponse } from './scan';
+import { ScannerWorkerClient, ScanCancelledError, scrubKind, type ScannerWorkerLike, type WorkerRequest, type WorkerResponse } from './scan';
 
 class FakeWorker implements ScannerWorkerLike {
   readonly messages: WorkerRequest[] = [];
@@ -83,5 +83,16 @@ describe('ScannerWorkerClient', () => {
     expect(errorMessage(undefined)).toBe('Scanner worker failed.');
     expect(errorMessage(42)).toBe('Scanner worker failed.');
     expect(errorMessage({})).toBe('Scanner worker failed.');
+  });
+});
+
+describe('scrubKind', () => {
+  it('accepts world inputs it can hand back in their own format and nothing else', () => {
+    expect(scrubKind('2026-09-25_abc.tar.zst')).toBe('tar.zst');
+    expect(scrubKind('backup.TAR')).toBe('tar');
+    expect(scrubKind('00_00__1_1.chunk')).toBe('chunk');
+    expect(scrubKind('Dedicated.db')).toBeNull();
+    expect(scrubKind('hero.fch')).toBeNull();
+    expect(scrubKind('notes.tar.zst.txt')).toBeNull();
   });
 });
