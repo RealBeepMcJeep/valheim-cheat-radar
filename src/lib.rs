@@ -878,12 +878,12 @@ fn sha512(bytes: &[u8]) -> [u8; 64] {
         0x5be0cd19137e2179,
     ];
     let bit_len = (bytes.len() as u128) * 8;
-    let padded_len = ((bytes.len() + 17 + 127) / 128) * 128;
+    let padded_len = (bytes.len() + 17).div_ceil(128) * 128;
     let mut data = vec![0u8; padded_len];
     data[..bytes.len()].copy_from_slice(bytes);
     data[bytes.len()] = 0x80;
     data[padded_len - 16..].copy_from_slice(&bit_len.to_be_bytes());
-    for block in data.chunks_exact(128) {
+    for block in data.as_chunks::<128>().0 {
         let mut w = [0u64; 80];
         for (i, word) in w[..16].iter_mut().enumerate() {
             *word = u64::from_be_bytes(block[i * 8..i * 8 + 8].try_into().unwrap());
@@ -1277,12 +1277,9 @@ const BIOME_TOTAL: usize = BIOME_COUNT;
 /// A prefab the game tags with several biomes carries proportionally less information, so weight it
 /// `12 / biomes` (a single-biome object is worth 12, a two-biome object 6, nine biomes 1).
 fn biome_weight(mask: u16) -> u32 {
-    let count = mask.count_ones();
-    if count == 0 {
-        0
-    } else {
-        (12 / count).max(1)
-    }
+    12u32
+        .checked_div(mask.count_ones())
+        .map_or(0, |weight| weight.max(1))
 }
 
 fn add_biome_votes(tally: &mut BiomeTally, mask: u16, weight: u32) {
@@ -3241,33 +3238,30 @@ pub fn character_evidence_csv(characters: &[CharacterScan]) -> String {
         .map(String::from),
     );
     for character in characters {
-        output.push_str(&csv_row(
-            [
-                opt_display(character.modified_unix),
-                character.source.clone(),
-                character.canonical.to_string(),
-                character_lineage(character, canonical_id).to_string(),
-                character.player_name.clone(),
-                character.profile_version.to_string(),
-                character.trusted.to_string(),
-                character.used_cheats.to_string(),
-                character.cheat_stat_nonzero_count.to_string(),
-                character.known_command_hits.to_string(),
-                opt_display(character.player_data_version),
-                opt_display(character.inventory_version),
-                character.inventory_item_count.to_string(),
-                character.cheated_inventory_count.to_string(),
-                character.bypass_cheat_checks.to_string(),
-                character.hash_valid.to_string(),
-                character.file_bytes.to_string(),
-                character.payload_bytes.to_string(),
-                character.hash_bytes.to_string(),
-                character.supported.to_string(),
-                character.parse_error.clone().unwrap_or_default(),
-                character.player_data_complete.to_string(),
-            ]
-            .into_iter(),
-        ));
+        output.push_str(&csv_row([
+            opt_display(character.modified_unix),
+            character.source.clone(),
+            character.canonical.to_string(),
+            character_lineage(character, canonical_id).to_string(),
+            character.player_name.clone(),
+            character.profile_version.to_string(),
+            character.trusted.to_string(),
+            character.used_cheats.to_string(),
+            character.cheat_stat_nonzero_count.to_string(),
+            character.known_command_hits.to_string(),
+            opt_display(character.player_data_version),
+            opt_display(character.inventory_version),
+            character.inventory_item_count.to_string(),
+            character.cheated_inventory_count.to_string(),
+            character.bypass_cheat_checks.to_string(),
+            character.hash_valid.to_string(),
+            character.file_bytes.to_string(),
+            character.payload_bytes.to_string(),
+            character.hash_bytes.to_string(),
+            character.supported.to_string(),
+            character.parse_error.clone().unwrap_or_default(),
+            character.player_data_complete.to_string(),
+        ]));
     }
     output
 }
