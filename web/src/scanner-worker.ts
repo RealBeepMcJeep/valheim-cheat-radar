@@ -15,6 +15,8 @@ const scope = self as unknown as {
 
 let scannerPromise: Promise<BrowserScanner> | null = null;
 let queue = Promise.resolve();
+// Set by the single-file build, which cannot fit the WASM inside the worker's data: URL.
+let wasmBytes: ArrayBuffer | undefined;
 
 function post(id: number, response: WorkerResponseBody, transfer: Transferable[] = []): void {
   scope.postMessage({ id, ...response } as WorkerResponse, transfer);
@@ -22,7 +24,7 @@ function post(id: number, response: WorkerResponseBody, transfer: Transferable[]
 
 async function getScanner(): Promise<BrowserScanner> {
   if (!scannerPromise) {
-    scannerPromise = init().then(() => new BrowserScanner());
+    scannerPromise = init(wasmBytes).then(() => new BrowserScanner());
   }
   return scannerPromise;
 }
@@ -200,6 +202,7 @@ function canonical(id: number, index: number): Promise<void> {
 function handle(request: WorkerRequest): Promise<void> {
   if (request.type === 'report') return report(request.id, request.failures);
   if (request.type === 'canonical') return canonical(request.id, request.index);
+  if (request.type === 'wasm') return Promise.resolve();
   if (request.type === 'scrub') {
     return scrub(request.id, request.name, request.buffer)
       .then((result) => post(request.id, { type: 'scrubbed', result }, [result.bytes]))
@@ -211,6 +214,10 @@ function handle(request: WorkerRequest): Promise<void> {
 }
 
 scope.onmessage = (event) => {
+  if (event.data.type === 'wasm') {
+    wasmBytes = event.data.bytes;
+    return;
+  }
   queue = queue.then(() => handle(event.data));
 };
 

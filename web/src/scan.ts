@@ -33,6 +33,7 @@ export function scrubbedName(name: string): string {
 type WorkerRequestBody =
   | { type: 'scan'; name: string; modifiedUnixMillis: number; inputId: number; buffer: ArrayBuffer }
   | { type: 'scrub'; name: string; buffer: ArrayBuffer }
+  | { type: 'wasm'; bytes: ArrayBuffer }
   | { type: 'canonical'; index: number }
   | { type: 'report'; failures: FailedFile[] };
 export type WorkerRequest = WorkerRequestBody & { id: number };
@@ -138,6 +139,13 @@ export class ScannerWorkerClient {
     };
     worker.addEventListener('message', onMessage);
     worker.addEventListener('error', onError);
+    // The single-file build embeds the WASM in the page (see build-single-file.mjs); hand it over
+    // before any work so the worker never tries to fetch it.
+    const inlineWasm = (globalThis as { __VCR_WASM_BASE64__?: string }).__VCR_WASM_BASE64__;
+    if (inlineWasm) {
+      const bytes = Uint8Array.from(atob(inlineWasm), (char) => char.charCodeAt(0)).buffer;
+      worker.postMessage({ type: 'wasm', bytes, id: 0 }, [bytes]);
+    }
     this.worker = worker;
     return worker;
   }
