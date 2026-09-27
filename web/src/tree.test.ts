@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { CATEGORY_ORDER, breakdownLabel, classify, clusterEvidence, clusterSummaryLabel, evidenceLabel } from './tree';
+import { CATEGORY_ORDER, breakdownLabel, classify, clusterChunkLabel, clusterEvidence, clusterSummaryLabel, evidenceLabel, spatialSort } from './tree';
 import type { Evidence } from './types';
+import type { TreeCluster } from './tree';
 
 function row(overrides: Partial<Evidence> & { x?: number; y?: number; z?: number } = {}): Evidence {
   const { x = 0, y = 0, z = 0, ...rest } = overrides;
@@ -175,8 +176,8 @@ describe('clusterSummaryLabel', () => {
   });
 
   it('omits the colon when there is nothing to break down', () => {
-    expect(clusterSummaryLabel({ id: 0, centroid: null, located: false, count: 1, groups: [] })).toBe('1 record');
-    expect(clusterSummaryLabel({ id: 1, centroid: null, located: false, count: 4, groups: [] })).toBe('4 records');
+    expect(clusterSummaryLabel({ id: 0, centroid: null, located: false, count: 1, groups: [], chunkLabel: null })).toBe('1 record');
+    expect(clusterSummaryLabel({ id: 1, centroid: null, located: false, count: 4, groups: [], chunkLabel: null })).toBe('4 records');
   });
 });
 
@@ -184,5 +185,64 @@ describe('evidenceLabel', () => {
   it('prefers the item name, then the owner prefab', () => {
     expect(evidenceLabel(row({ item_name: 'Silver' }))).toBe('Silver');
     expect(evidenceLabel(row({ item_name: null, owner_prefab_name: 'stone_wall_2x1' }))).toBe('stone_wall_2x1');
+  });
+});
+
+describe('clusterChunkLabel', () => {
+  it('returns null when no row carries chunk provenance', () => {
+    expect(clusterChunkLabel([row({ chunk: null }), row({ chunk: null })])).toBeNull();
+  });
+
+  it('names the single chunk when every row shares it', () => {
+    expect(clusterChunkLabel([row({ chunk: 'a.chunk' }), row({ chunk: 'a.chunk' })])).toBe('a.chunk');
+  });
+
+  it('names the dominant chunk with a +N count of the rest', () => {
+    const rows = [
+      row({ chunk: 'a.chunk' }),
+      row({ chunk: 'a.chunk' }),
+      row({ chunk: 'a.chunk' }),
+      row({ chunk: 'b.chunk' }),
+      row({ chunk: 'c.chunk' }),
+    ];
+    expect(clusterChunkLabel(rows)).toBe('a.chunk +2');
+  });
+
+  it('ignores rows without chunk provenance when picking the dominant one', () => {
+    expect(clusterChunkLabel([row({ chunk: null }), row({ chunk: 'a.chunk' })])).toBe('a.chunk');
+  });
+});
+
+describe('clusterEvidence chunk labels', () => {
+  it('attaches the dominant chunk label to each built cluster', () => {
+    const clusters = clusterEvidence(
+      [row({ x: 0, z: 0, chunk: 'a.chunk' }), row({ x: 1, z: 0, chunk: 'a.chunk' }), row({ x: 500, z: 0, chunk: 'b.chunk' })],
+      30,
+    );
+    expect(clusters[0].chunkLabel).toBe('a.chunk');
+    expect(clusters[1].chunkLabel).toBe('b.chunk');
+  });
+});
+
+describe('spatialSort', () => {
+  function clusterAt(id: number, x: number, z: number): TreeCluster {
+    return { id, centroid: { x, y: 0, z }, located: true, count: 1, groups: [], chunkLabel: null };
+  }
+
+  it('chains clusters from west to east when they lie on a line', () => {
+    const clusters = [clusterAt(0, 300, 0), clusterAt(1, 0, 0), clusterAt(2, 100, 0)];
+    expect(spatialSort(clusters).map((cluster) => cluster.id)).toEqual([1, 2, 0]);
+  });
+
+  it('keeps unlocated clusters last regardless of order', () => {
+    const unlocated: TreeCluster = { id: 9, centroid: null, located: false, count: 1, groups: [], chunkLabel: null };
+    const clusters = [unlocated, clusterAt(0, 50, 0), clusterAt(1, 0, 0)];
+    expect(spatialSort(clusters).map((cluster) => cluster.id)).toEqual([1, 0, 9]);
+  });
+
+  it('is a no-op for zero or one located cluster', () => {
+    expect(spatialSort([])).toEqual([]);
+    const single = [clusterAt(0, 5, 5)];
+    expect(spatialSort(single)).toEqual(single);
   });
 });

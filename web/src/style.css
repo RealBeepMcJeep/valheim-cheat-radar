@@ -120,6 +120,7 @@ details summary { color: var(--blue); cursor: pointer; }
 .tree-title { color: var(--bone); font-weight: 700; }
 .tree-count { color: var(--muted); font: .7rem ui-monospace, monospace; margin-left: auto; }
 .tree-coord { color: var(--blue); font: .72rem ui-monospace, monospace; }
+.tree-chunk { color: var(--ember-bright); font: .72rem ui-monospace, monospace; }
 
 /* World metadata: masthead panel + per-archive timeline line (see WorldDetailsPanel/TimelineWorldMeta in App.tsx). */
 .world-details { flex: 1 1 100%; border-top: 1px solid var(--line); padding-top: 1rem; }
