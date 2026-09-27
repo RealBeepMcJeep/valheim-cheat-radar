@@ -9,13 +9,13 @@ use std::time::Instant;
 use valheim_backup_cheat_scanner::{
     scan_archives, scan_character_timeline, scrub_world_archive, validate_character_oracle,
     validate_oracle, validate_oracle_fixture_file, write_reports_with_characters, PrefabNames,
-    ScrubPatchKind,
+    ScrubMode,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
 fn usage() -> ! {
     eprintln!("usage: valheim-backup-cheat-scanner [--archive-dir DIR] [--output-dir DIR] [--prefab-names FILE] [--prefab-biomes FILE] [--zstd PROGRAM] [--character FILE] [--character-history-dir DIR] [--oracle FILE] [--validate]");
-    eprintln!("       valheim-backup-cheat-scanner --scrub-world ARCHIVE.tar.zst --scrub-out DIR [--prefab-names FILE] [--zstd PROGRAM]");
+    eprintln!("       valheim-backup-cheat-scanner --scrub-world ARCHIVE.tar.zst --scrub-out DIR [--scrub-mode clean|delete-items|destroy] [--prefab-names FILE] [--zstd PROGRAM]");
     std::process::exit(2);
 }
 
@@ -45,6 +45,7 @@ fn main() {
     let mut validate = false;
     let mut scrub_world: Option<PathBuf> = None;
     let mut scrub_out: Option<PathBuf> = None;
+    let mut scrub_mode = ScrubMode::Clean;
     let args: Vec<String> = env::args().skip(1).collect();
     let mut index = 0;
     while index < args.len() {
@@ -103,6 +104,13 @@ fn main() {
                 index += 1;
                 scrub_out = args.get(index).map(PathBuf::from).or_else(|| usage());
             }
+            "--scrub-mode" => {
+                index += 1;
+                scrub_mode = args
+                    .get(index)
+                    .and_then(|mode| ScrubMode::parse(mode))
+                    .unwrap_or_else(|| usage());
+            }
             "--help" | "-h" => usage(),
             _ => usage(),
         }
@@ -119,26 +127,33 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            let outcome = match scrub_world_archive(archive, out_dir, &zstd, &prefabs) {
-                Ok(outcome) => outcome,
+            let report = match scrub_world_archive(archive, out_dir, &zstd, &prefabs, scrub_mode) {
+                Ok(report) => report,
                 Err(error) => {
                     eprintln!("scrub failed: {error}");
                     std::process::exit(1);
                 }
             };
-            let int_flags = outcome
-                .patches
+            let mut counts: Vec<(&str, usize)> = Vec::new();
+            for action in &report.actions {
+                match counts.iter_mut().find(|(name, _)| *name == action.action) {
+                    Some(count) => count.1 += 1,
+                    None => counts.push((action.action, 1)),
+                }
+            }
+            let summary = counts
                 .iter()
-                .filter(|patch| patch.kind == ScrubPatchKind::ZdoIntFlag)
-                .count();
-            let item_bits = outcome.patches.len() - int_flags;
+                .map(|(name, count)| format!("{name} {count}"))
+                .collect::<Vec<_>>()
+                .join(", ");
             println!(
-                "scrubbed {} ZDOs across {} in {:.3}s: {} ZDO int-flag patch(es), {} item cheated-bit patch(es); output written to {}",
-                outcome.zdo_count,
+                "scrubbed {} ({} mode) in {:.3}s: ZDOs {} -> {}; {}; output written to {}",
                 archive.display(),
+                scrub_mode.as_str(),
                 started.elapsed().as_secs_f64(),
-                int_flags,
-                item_bits,
+                report.zdo_count_before,
+                report.zdo_count_after,
+                summary,
                 out_dir.display()
             );
             return;

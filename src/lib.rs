@@ -26,6 +26,9 @@ pub const CHEATED: i32 = -153_476_768;
 pub const CHEATED_QUEUED: i32 = 554_813_359;
 pub const ITEM_DATA: i32 = 949_524_933;
 pub const ITEMS: i32 = -938_864_442;
+/// `ItemStand` keeps the hash of the item it holds in this int (0 when empty) next to `itemData`.
+const ITEM_INT: i32 = -1_126_421_579;
+const TYPE_INT: i32 = 1_421_151_742;
 pub const QUEUED: i32 = -2_086_149_575;
 
 #[derive(Debug, Clone)]
@@ -370,15 +373,6 @@ pub enum ScrubPatchKind {
     ItemCheatedBit,
 }
 
-impl ScrubPatchKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            ScrubPatchKind::ZdoIntFlag => "zdo_int_flag",
-            ScrubPatchKind::ItemCheatedBit => "item_cheated_bit",
-        }
-    }
-}
-
 /// A single recorded patch location, found while parsing a v41 chunk file. `offset` is absolute
 /// within `file_path`. `old_value`/`new_value` are recorded from the parser's own read of the
 /// bytes at the moment it found the flag, and `apply_patch` re-reads the buffer at `offset` and
@@ -394,6 +388,62 @@ pub struct ScrubPatch {
     pub position: Position,
     pub old_value: i64,
     pub new_value: i64,
+}
+
+/// What the parser records for a scrub while it walks a chunk: the flag patches (always; they are
+/// few) and, only when `layouts` is `Some`, every ZDO record's byte layout, which the delete modes
+/// need and an ordinary scan of ~900k ZDOs must not pay for.
+#[derive(Debug, Default)]
+struct ScrubSink {
+    patches: Vec<ScrubPatch>,
+    layouts: Option<Vec<ZdoLayout>>,
+}
+
+impl ScrubSink {
+    fn with_layouts() -> Self {
+        Self {
+            patches: Vec::new(),
+            layouts: Some(Vec::new()),
+        }
+    }
+}
+
+/// One ZDO record inside a chunk file, as much as a delete scrub needs. Offsets are absolute
+/// within the chunk file.
+#[derive(Debug, Clone)]
+struct ZdoLayout {
+    start: u64,
+    end: u64,
+    owner_prefab_hash: i32,
+    position: Position,
+    /// Nonzero `cheated`/`cheatedQueued[+slot]` values: the object itself is flagged.
+    object_flags: usize,
+    /// Value offset and value of the `item`/`type` ints an `ItemStand` keeps. Their presence is
+    /// what tells a stand holding an item apart from an item lying in the world.
+    item_int: Option<(u64, i32)>,
+    type_int: Option<(u64, i32)>,
+    /// `items`, `itemData` and `N_itemData` byte arrays; other arrays are not recorded.
+    arrays: Vec<ArrayLayout>,
+}
+
+#[derive(Debug, Clone)]
+struct ArrayLayout {
+    key: i32,
+    /// Offset of the array's i32 length prefix; the data follows it.
+    len_offset: u64,
+    len: u64,
+    /// Item ranges relative to the data start (a single item for `itemData`).
+    items: Vec<ItemLayout>,
+}
+
+#[derive(Debug, Clone)]
+struct ItemLayout {
+    start: u64,
+    end: u64,
+    cheated: bool,
+    /// Absolute offset of the flags byte holding the cheated bit, for cheated items.
+    cheated_byte: Option<u64>,
+    item_hash: Option<i32>,
 }
 
 struct Cursor<'a> {
@@ -490,6 +540,9 @@ struct ItemSummary {
     /// Position, within the slice the enclosing `Cursor` was built over, of the trailing cheated
     /// flags byte. `None` when this item's version has no such byte (106).
     cheated_byte_pos: Option<usize>,
+    /// This item's byte range within that same slice, so a delete scrub can cut it out.
+    start: usize,
+    end: usize,
 }
 
 fn validate_item_version(version: i32, _allow_legacy_106: bool) -> Result<u8, ScanError> {
@@ -507,6 +560,7 @@ fn scan_item(
     allow_legacy_106: bool,
 ) -> Result<(ItemSummary, bool), ScanError> {
     validate_item_version(version as i32, allow_legacy_106)?;
+    let start = cursor.position;
     let _durability = cursor.i32()?;
     let _grid_x = cursor.u8()?;
     let _grid_y = cursor.u8()?;
@@ -536,7 +590,14 @@ fn scan_item(
     } else {
         (None, false)
     };
-    Ok((ItemSummary { cheated_byte_pos }, cheated))
+    Ok((
+        ItemSummary {
+            cheated_byte_pos,
+            start,
+            end: cursor.position,
+        },
+        cheated,
+    ))
 }
 
 fn decode_item(
@@ -1614,8 +1675,13 @@ fn parse_zdo<R: Read>(
     output: &mut ParseOutput,
     scratch: &mut Vec<u8>,
     base64_scratch: &mut Vec<u8>,
-    patches: &mut Vec<ScrubPatch>,
+    sink: &mut ScrubSink,
 ) -> Result<(), ScanError> {
+    let record_start = reader.pos();
+    let mut object_flags = 0usize;
+    let mut item_int = None;
+    let mut type_int = None;
+    let mut arrays = Vec::new();
     let flags = read_u16(reader)?;
     let (position, legacy_sector) = if current {
         let position = if flags & FLAG_SMALL_POSITION != 0 {
@@ -1696,11 +1762,17 @@ fn parse_zdo<R: Read>(
             let key = read_i32(reader)?;
             let value_offset = reader.pos();
             let value = read_i32(reader)?;
+            if key == ITEM_INT {
+                item_int = Some((value_offset, value));
+            } else if key == TYPE_INT {
+                type_int = Some((value_offset, value));
+            }
             if value == 0 {
                 continue;
             }
             if key == CHEATED {
-                patches.push(ScrubPatch {
+                object_flags += 1;
+                sink.patches.push(ScrubPatch {
                     file_path: String::new(),
                     offset: value_offset,
                     kind: ScrubPatchKind::ZdoIntFlag,
@@ -1724,7 +1796,8 @@ fn parse_zdo<R: Read>(
                 } else {
                     format!("cheatedQueued+{}", key - CHEATED_QUEUED)
                 };
-                patches.push(ScrubPatch {
+                object_flags += 1;
+                sink.patches.push(ScrubPatch {
                     file_path: String::new(),
                     offset: value_offset,
                     kind: ScrubPatchKind::ZdoIntFlag,
@@ -1801,12 +1874,28 @@ fn parse_zdo<R: Read>(
             let array_start = reader.pos();
             scratch.resize(length, 0);
             read_exact(reader, scratch)?;
+            let mut items = Vec::new();
             if key == ITEMS {
-                let (hits, _decoded) = parse_inventory_internal(scratch, legacy_count, |_, _| {})?;
+                let (hits, _decoded) =
+                    parse_inventory_internal(scratch, legacy_count, |summary, cheated| {
+                        items.push(ItemLayout {
+                            start: summary.start as u64,
+                            end: summary.end as u64,
+                            cheated,
+                            cheated_byte: None,
+                            item_hash: None,
+                        });
+                    })?;
                 output.counts.decoded_item_count += 1;
+                // `hits` holds the cheated items in order; attach each to its layout.
+                for (layout, hit) in items.iter_mut().filter(|item| item.cheated).zip(&hits) {
+                    layout.cheated_byte =
+                        hit.cheated_byte_offset.map(|pos| array_start + pos as u64);
+                    layout.item_hash = hit.item_hash;
+                }
                 for hit in &hits {
                     push_item_cheated_bit_patch(
-                        patches,
+                        &mut sink.patches,
                         &info,
                         "items",
                         array_start,
@@ -1834,10 +1923,21 @@ fn parse_zdo<R: Read>(
                 } else {
                     "itemData".to_string()
                 };
-                let (item, _summary) = parse_direct_item_internal(scratch)?;
+                let (item, summary) = parse_direct_item_internal(scratch)?;
+                // The summary's range is relative to the data after the version byte.
+                items.push(ItemLayout {
+                    start: summary.start as u64 + 1,
+                    end: summary.end as u64 + 1,
+                    cheated: item.is_some(),
+                    cheated_byte: item
+                        .as_ref()
+                        .and_then(|item| item.cheated_byte_offset)
+                        .map(|pos| array_start + pos as u64),
+                    item_hash: item.as_ref().and_then(|item| item.item_hash),
+                });
                 if let Some(item) = item {
                     push_item_cheated_bit_patch(
-                        patches,
+                        &mut sink.patches,
                         &info,
                         &key_name,
                         array_start,
@@ -1847,7 +1947,25 @@ fn parse_zdo<R: Read>(
                     add_item_hits(output, &info, key, key_name, kind, vec![item]);
                 }
             }
+            arrays.push(ArrayLayout {
+                key,
+                len_offset: array_start - 4,
+                len: length as u64,
+                items,
+            });
         }
+    }
+    if let Some(layouts) = sink.layouts.as_mut() {
+        layouts.push(ZdoLayout {
+            start: record_start,
+            end: reader.pos(),
+            owner_prefab_hash,
+            position,
+            object_flags,
+            item_int,
+            type_int,
+            arrays,
+        });
     }
     Ok(())
 }
@@ -1861,7 +1979,7 @@ fn parse_chunk_reader<R: Read>(
     internal_path: &str,
     prefabs: &PrefabNames,
     metadata: &[ChunkMeta],
-    patches: &mut Vec<ScrubPatch>,
+    sink: &mut ScrubSink,
 ) -> Result<ParseOutput, ScanError> {
     let mut reader = CountingReader::new(reader);
     let reader = &mut reader;
@@ -1909,7 +2027,7 @@ fn parse_chunk_reader<R: Read>(
             &mut output,
             &mut scratch,
             &mut base64_scratch,
-            patches,
+            sink,
         )?;
         output.zdo_count += 1;
     }
@@ -1934,7 +2052,7 @@ fn parse_legacy_reader<R: Read>(
     let reader = &mut reader;
     // Legacy v37 worlds are not a scrub target (see `scrub_world_tar_bytes`); patches found here
     // are always discarded.
-    let mut patches = Vec::new();
+    let mut sink = ScrubSink::default();
     let version = read_i32(reader)?;
     if version != 37 {
         return Err(error(format!(
@@ -1976,7 +2094,7 @@ fn parse_legacy_reader<R: Read>(
             &mut output,
             &mut scratch,
             &mut base64_scratch,
-            &mut patches,
+            &mut sink,
         )?;
         output.zdo_count += 1;
     }
@@ -2536,7 +2654,7 @@ pub fn scan_tar_bytes(
                 internal_path,
                 prefabs,
                 &metadata,
-                &mut Vec::new(),
+                &mut ScrubSink::default(),
             )?;
             archive.format = "chunked_v41".to_string();
             merge_parse(&mut archive, output);
@@ -2607,6 +2725,86 @@ fn world_relative_path(internal_path: &str) -> Option<String> {
     Some(parts[start..].join("/"))
 }
 
+/// The world files inside a backup tar, each with its offset in the tar. Only v41 chunked worlds
+/// are accepted; any file under `worlds_local/` whose layout is not known fails the read closed.
+struct WorldTar {
+    metadata: Vec<ChunkMeta>,
+    metadata_total: i32,
+    /// Sorted by path.
+    chunks: Vec<ScrubbedFile>,
+    /// Everything else under `worlds_local/`, the `.chunks` index included.
+    passthrough: Vec<ScrubbedFile>,
+}
+
+fn read_world_tar(bytes: &[u8]) -> Result<WorldTar, ScanError> {
+    let mut tar = TarStream::new(bytes);
+    let mut metadata: Vec<ChunkMeta> = Vec::new();
+    let mut metadata_total: Option<i32> = None;
+    let mut chunks: Vec<ScrubbedFile> = Vec::new();
+    let mut passthrough: Vec<ScrubbedFile> = Vec::new();
+    tar.for_each_entry(|header, body| {
+        let path_bytes = header.path();
+        let internal_path =
+            std::str::from_utf8(path_bytes).map_err(|_| error("invalid tar path"))?;
+        validate_browser_tar_path(internal_path)?;
+        let Some(world_path) = world_relative_path(internal_path) else {
+            // Outside worlds_local/: not part of the world save, never copied or touched.
+            return Ok(());
+        };
+        let tar_offset = (bytes.len() - body.reader.len()) as u64;
+        let limit = if internal_path.ends_with(".chunks")
+            || internal_path.ends_with(".fwl2")
+            || internal_path.ends_with(".ok")
+        {
+            MAX_WORLD_META_BYTES
+        } else if internal_path.ends_with(".chunk") {
+            MAX_CHUNK_FILE_BYTES
+        } else if internal_path.ends_with(".db2") {
+            MAX_DB2_ENTRY_BYTES
+        } else {
+            // A legacy .fwl/.db world, or anything else under worlds_local/ this scrubber does not
+            // know the layout of: fail closed rather than silently dropping or mis-copying it.
+            return Err(error(format!(
+                "cannot account for world file, refusing to scrub: {internal_path}"
+            )));
+        };
+        let file = ScrubbedFile {
+            path: world_path,
+            bytes: read_bounded(body, limit)?,
+            tar_offset,
+        };
+        if internal_path.ends_with(".chunks") {
+            let (version, total, entries) = parse_chunks_metadata(&mut &file.bytes[..])?;
+            if version != 41 {
+                return Err(error(format!(
+                    "unexpected chunks metadata version {version}"
+                )));
+            }
+            metadata_total = Some(total);
+            metadata = entries;
+        }
+        if internal_path.ends_with(".chunk") {
+            chunks.push(file);
+        } else {
+            passthrough.push(file);
+        }
+        Ok(())
+    })?;
+    tar.reject_nonzero_trailing()?;
+    let metadata_total = metadata_total
+        .ok_or_else(|| error("world archive has no chunk metadata (.chunks) file"))?;
+    if chunks.is_empty() {
+        return Err(error("world archive has no chunk files"));
+    }
+    chunks.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(WorldTar {
+        metadata,
+        metadata_total,
+        chunks,
+        passthrough,
+    })
+}
+
 /// Clears cheat flags in place, on a copy: reads a decompressed world tar, finds every
 /// `cheated`/`cheatedQueued[+slot]` ZDO int and every item's cheated-flag byte the parser can
 /// account for, and returns the world's files with exactly those bytes patched (same length, same
@@ -2623,83 +2821,16 @@ pub fn scrub_world_tar_bytes(
     bytes: &[u8],
     prefabs: &PrefabNames,
 ) -> Result<ScrubOutcome, ScanError> {
-    struct ChunkFile {
-        path: String,
-        bytes: Vec<u8>,
-        tar_offset: u64,
-    }
-    let mut tar = TarStream::new(bytes);
-    let mut metadata: Vec<ChunkMeta> = Vec::new();
-    let mut metadata_total: Option<i32> = None;
-    let mut chunk_files: Vec<ChunkFile> = Vec::new();
-    let mut passthrough_files: Vec<ScrubbedFile> = Vec::new();
-    tar.for_each_entry(|header, body| {
-        let path_bytes = header.path();
-        let internal_path =
-            std::str::from_utf8(path_bytes).map_err(|_| error("invalid tar path"))?;
-        validate_browser_tar_path(internal_path)?;
-        let Some(world_path) = world_relative_path(internal_path) else {
-            // Outside worlds_local/: not part of the world save, never copied or touched.
-            return Ok(());
-        };
-        let tar_offset = (bytes.len() - body.reader.len()) as u64;
-        if internal_path.ends_with(".chunks") {
-            let raw = read_bounded(body, MAX_WORLD_META_BYTES)?;
-            let (version, total, entries) = parse_chunks_metadata(&mut &raw[..])?;
-            if version != 41 {
-                return Err(error(format!(
-                    "unexpected chunks metadata version {version}"
-                )));
-            }
-            metadata_total = Some(total);
-            metadata = entries;
-            passthrough_files.push(ScrubbedFile {
-                path: world_path,
-                bytes: raw,
-                tar_offset,
-            });
-        } else if internal_path.ends_with(".chunk") {
-            let raw = read_bounded(body, MAX_CHUNK_FILE_BYTES)?;
-            chunk_files.push(ChunkFile {
-                path: world_path,
-                bytes: raw,
-                tar_offset,
-            });
-        } else if internal_path.ends_with(".fwl2") || internal_path.ends_with(".ok") {
-            let raw = read_bounded(body, MAX_WORLD_META_BYTES)?;
-            passthrough_files.push(ScrubbedFile {
-                path: world_path,
-                bytes: raw,
-                tar_offset,
-            });
-        } else if internal_path.ends_with(".db2") {
-            let raw = read_bounded(body, MAX_DB2_ENTRY_BYTES)?;
-            passthrough_files.push(ScrubbedFile {
-                path: world_path,
-                bytes: raw,
-                tar_offset,
-            });
-        } else {
-            // A legacy .fwl/.db world, or anything else under worlds_local/ this scrubber does not
-            // know the layout of: fail closed rather than silently dropping or mis-copying it.
-            return Err(error(format!(
-                "cannot account for world file, refusing to scrub: {internal_path}"
-            )));
-        }
-        Ok(())
-    })?;
-    tar.reject_nonzero_trailing()?;
-
-    let metadata_total = metadata_total
-        .ok_or_else(|| error("world archive has no chunk metadata (.chunks) file"))?;
-    if chunk_files.is_empty() {
-        return Err(error("world archive has no chunk files"));
-    }
-    chunk_files.sort_by(|a, b| a.path.cmp(&b.path));
+    let WorldTar {
+        metadata,
+        metadata_total,
+        chunks: chunk_files,
+        passthrough: passthrough_files,
+    } = read_world_tar(bytes)?;
 
     let mut outcome = ScrubOutcome::default();
     for chunk in &chunk_files {
-        let mut patches = Vec::new();
+        let mut sink = ScrubSink::default();
         let mut reader = &chunk.bytes[..];
         let before = parse_chunk_reader(
             &mut reader,
@@ -2709,8 +2840,9 @@ pub fn scrub_world_tar_bytes(
             &chunk.path,
             prefabs,
             &metadata,
-            &mut patches,
+            &mut sink,
         )?;
+        let mut patches = sink.patches;
         for patch in &mut patches {
             patch.file_path = chunk.path.clone();
         }
@@ -2826,7 +2958,7 @@ pub fn scrub_chunk_in_place(
     name: &str,
     prefabs: &PrefabNames,
 ) -> Result<(Vec<u8>, ScrubOutcome), ScanError> {
-    let mut patches = Vec::new();
+    let mut sink = ScrubSink::default();
     let before = parse_chunk_reader(
         &mut &bytes[..],
         bytes.len() as u64,
@@ -2835,8 +2967,9 @@ pub fn scrub_chunk_in_place(
         name,
         prefabs,
         &[],
-        &mut patches,
+        &mut sink,
     )?;
+    let mut patches = sink.patches;
     for patch in &mut patches {
         patch.file_path = name.to_string();
     }
@@ -2855,6 +2988,623 @@ pub fn scrub_chunk_in_place(
         zdo_count: before.zdo_count,
     };
     Ok((patched, outcome))
+}
+
+/// How a scrub treats flagged content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrubMode {
+    /// Clear every flag in place and keep every object (same-length patches).
+    Clean,
+    /// Delete flagged items - items lying in the world, entries in containers, items on stands -
+    /// and leave every other flagged object, flag and all.
+    DeleteItems,
+    /// Destroy every flagged object together with whatever it holds, and remove flagged items from
+    /// containers and stands that are not flagged themselves. Nothing flagged survives.
+    Destroy,
+}
+
+impl ScrubMode {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "clean" => Some(Self::Clean),
+            "delete-items" => Some(Self::DeleteItems),
+            "destroy" => Some(Self::Destroy),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::DeleteItems => "delete-items",
+            Self::Destroy => "destroy",
+        }
+    }
+}
+
+/// One thing a scrub did, for the audit and the preview. `offset` is in the original file: the
+/// patched value for `clear_flag`/`empty_stand`, the ZDO record start otherwise.
+#[derive(Debug, Clone)]
+pub struct ScrubAction {
+    /// `clear_flag`, `delete_item`, `remove_from_container`, `empty_stand` or `destroy`.
+    pub action: &'static str,
+    pub file_path: String,
+    pub offset: u64,
+    pub key_name: String,
+    pub owner_prefab_name: Option<String>,
+    pub item_name: Option<String>,
+    pub position: Position,
+    /// Items a destroyed object held (container contents, a stand's item), gone with it.
+    pub contents: usize,
+}
+
+/// Everything one scrub did, in the order found.
+#[derive(Debug)]
+pub struct ScrubReport {
+    pub mode: ScrubMode,
+    pub zdo_count_before: u64,
+    pub zdo_count_after: u64,
+    pub actions: Vec<ScrubAction>,
+}
+
+impl ScrubReport {
+    fn from_patches(outcome: &ScrubOutcome) -> Self {
+        Self {
+            mode: ScrubMode::Clean,
+            zdo_count_before: outcome.zdo_count,
+            zdo_count_after: outcome.zdo_count,
+            actions: outcome
+                .patches
+                .iter()
+                .map(|patch| ScrubAction {
+                    action: "clear_flag",
+                    file_path: patch.file_path.clone(),
+                    offset: patch.offset,
+                    key_name: patch.key_name.clone(),
+                    owner_prefab_name: patch.owner_prefab_name.clone(),
+                    item_name: None,
+                    position: patch.position,
+                    contents: 0,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// What a delete scrub does to one ZDO record.
+enum ZdoPlan {
+    Keep,
+    Drop,
+    /// Remove the listed items from the listed arrays (array index, item indices) and overwrite
+    /// same-length values (absolute offset, new bytes).
+    Edit {
+        removals: Vec<(usize, Vec<usize>)>,
+        overwrites: Vec<(u64, Vec<u8>)>,
+    },
+}
+
+fn plan_zdo(
+    zdo: &ZdoLayout,
+    mode: ScrubMode,
+    bytes: &[u8],
+    path: &str,
+    prefabs: &PrefabNames,
+    actions: &mut Vec<ScrubAction>,
+) -> Result<ZdoPlan, ScanError> {
+    let prefab = |hash: i32| prefabs.name(hash).map(str::to_string);
+    let action =
+        |action: &'static str, key: &str, item: Option<String>, contents: usize| ScrubAction {
+            action,
+            file_path: path.to_string(),
+            offset: zdo.start,
+            key_name: key.to_string(),
+            owner_prefab_name: prefab(zdo.owner_prefab_hash),
+            item_name: item,
+            position: zdo.position,
+            contents,
+        };
+    // An `itemData` array without the `item` int an ItemStand keeps is an item lying in the world.
+    let direct = zdo.arrays.iter().position(|array| array.key == ITEM_DATA);
+    let is_stand = zdo.item_int.is_some();
+    let direct_cheated = direct.is_some_and(|index| zdo.arrays[index].items[0].cheated);
+    if mode == ScrubMode::Destroy && zdo.object_flags > 0 {
+        let held = zdo
+            .arrays
+            .iter()
+            .filter(|array| array.key != ITEM_DATA)
+            .map(|array| array.items.len())
+            .sum::<usize>()
+            + usize::from(zdo.item_int.is_some_and(|(_, value)| value != 0));
+        actions.push(action("destroy", "cheated", None, held));
+        return Ok(ZdoPlan::Drop);
+    }
+    if direct.is_some() && !is_stand && (direct_cheated || zdo.object_flags > 0) {
+        actions.push(action(
+            "delete_item",
+            "itemData",
+            prefab(zdo.owner_prefab_hash),
+            0,
+        ));
+        return Ok(ZdoPlan::Drop);
+    }
+    let mut removals = Vec::new();
+    let mut overwrites = Vec::new();
+    for (index, array) in zdo.arrays.iter().enumerate() {
+        let cheated: Vec<usize> = (0..array.items.len())
+            .filter(|&item| array.items[item].cheated)
+            .collect();
+        if cheated.is_empty() {
+            continue;
+        }
+        if array.key == ITEMS {
+            for &item in &cheated {
+                let name = array.items[item].item_hash.and_then(prefab);
+                actions.push(action("remove_from_container", "items", name, 0));
+            }
+            removals.push((index, cheated));
+        } else if array.key == ITEM_DATA {
+            // An ItemStand holding (or having held) a flagged item: empty it in place, as the
+            // game's own ItemStand.DropItem does (`item` and `type` to 0), and clear the stale bit.
+            let held = zdo
+                .item_int
+                .and_then(|(_, value)| (value != 0).then_some(value));
+            for (offset, value) in [zdo.item_int, zdo.type_int].into_iter().flatten() {
+                if value != 0 {
+                    overwrites.push((offset, 0i32.to_le_bytes().to_vec()));
+                }
+            }
+            let bit = array.items[0]
+                .cheated_byte
+                .ok_or_else(|| error(format!("{path}: stand item has no recorded flag byte")))?;
+            overwrites.push((bit, vec![bytes[bit as usize] & 0xfe]));
+            actions.push(action("empty_stand", "itemData", held.and_then(prefab), 0));
+        } else {
+            return Err(error(format!(
+                "{path}: an armor-stand slot holds a flagged item, which this mode does not handle \
+                 yet; use the clean mode for this save"
+            )));
+        }
+    }
+    Ok(if removals.is_empty() && overwrites.is_empty() {
+        ZdoPlan::Keep
+    } else {
+        ZdoPlan::Edit {
+            removals,
+            overwrites,
+        }
+    })
+}
+
+/// The bytes of one edited ZDO record: overwrites applied, then flagged items cut out of their
+/// arrays (last array first, so earlier offsets stay valid), with each array's item count and
+/// length prefix rewritten.
+fn edit_zdo_record(
+    bytes: &[u8],
+    zdo: &ZdoLayout,
+    removals: &[(usize, Vec<usize>)],
+    overwrites: &[(u64, Vec<u8>)],
+    path: &str,
+) -> Result<Vec<u8>, ScanError> {
+    let base = zdo.start as usize;
+    let mut record = bytes[base..zdo.end as usize].to_vec();
+    for (offset, new) in overwrites {
+        let at = *offset as usize - base;
+        record[at..at + new.len()].copy_from_slice(new);
+    }
+    let mut ordered: Vec<&(usize, Vec<usize>)> = removals.iter().collect();
+    ordered.sort_by_key(|(index, _)| std::cmp::Reverse(zdo.arrays[*index].len_offset));
+    for (index, removed) in ordered {
+        let array = &zdo.arrays[*index];
+        let len_at = array.len_offset as usize - base;
+        let data_at = len_at + 4;
+        let data = &record[data_at..data_at + array.len as usize];
+        let count = u16::from_le_bytes([data[4], data[5]]) as usize;
+        let last_end = array.items.last().map_or(6, |item| item.end as usize);
+        if count != array.items.len() || last_end != data.len() {
+            return Err(error(format!(
+                "{path}: container item list does not match its recorded layout"
+            )));
+        }
+        let kept = array.items.len() - removed.len();
+        let mut new_data = data[..4].to_vec();
+        new_data.extend_from_slice(&(kept as u16).to_le_bytes());
+        for (item_index, item) in array.items.iter().enumerate() {
+            if !removed.contains(&item_index) {
+                new_data.extend_from_slice(&data[item.start as usize..item.end as usize]);
+            }
+        }
+        let mut replacement = (new_data.len() as i32).to_le_bytes().to_vec();
+        replacement.extend(new_data);
+        record.splice(len_at..data_at + array.len as usize, replacement);
+    }
+    Ok(record)
+}
+
+/// Bytes of a record outside its recorded arrays, with the given record-relative int positions
+/// zeroed, so an edited record can be compared with its original independently of how it was
+/// rebuilt. Ints precede byte arrays in a record, so their relative positions survive array edits.
+fn record_skeleton(bytes: &[u8], zdo: &ZdoLayout, blank: &[u64]) -> Vec<u8> {
+    let mut record = bytes[zdo.start as usize..zdo.end as usize].to_vec();
+    for &at in blank {
+        record[at as usize..at as usize + 4].fill(0);
+    }
+    let mut regions: Vec<(usize, usize)> = zdo
+        .arrays
+        .iter()
+        .map(|array| {
+            let start = (array.len_offset - zdo.start) as usize;
+            (start, start + 4 + array.len as usize)
+        })
+        .collect();
+    regions.sort();
+    let mut out = Vec::new();
+    let mut at = 0;
+    for (start, end) in regions {
+        out.extend_from_slice(&record[at..start]);
+        at = end;
+    }
+    out.extend_from_slice(&record[at..]);
+    out
+}
+
+/// Item byte slices of every recorded array of a record, per array.
+fn record_items<'a>(bytes: &'a [u8], zdo: &ZdoLayout) -> Vec<Vec<&'a [u8]>> {
+    zdo.arrays
+        .iter()
+        .map(|array| {
+            let data = (array.len_offset + 4) as usize;
+            array
+                .items
+                .iter()
+                .map(|item| &bytes[data + item.start as usize..data + item.end as usize])
+                .collect()
+        })
+        .collect()
+}
+
+struct RebuiltChunk {
+    bytes: Vec<u8>,
+    changed: bool,
+    zdo_count_before: u64,
+    dropped: u64,
+    kept_object_flags: usize,
+    actions: Vec<ScrubAction>,
+}
+
+/// Delete/destroy scrub of one chunk file, verified by parsing the result again: every kept record
+/// must be byte-identical to its original, or - where edited - identical outside its arrays except
+/// at the audited ints, with exactly the audited items missing from its arrays and nothing flagged
+/// left in them; the ZDO count and prefab histogram must drop by exactly the removed records; and
+/// the only evidence left must be what the mode deliberately keeps.
+fn rebuild_chunk(
+    bytes: &[u8],
+    path: &str,
+    prefabs: &PrefabNames,
+    metadata: &[ChunkMeta],
+    mode: ScrubMode,
+) -> Result<RebuiltChunk, ScanError> {
+    let parse = |data: &[u8]| -> Result<(ParseOutput, Vec<ZdoLayout>), ScanError> {
+        let mut sink = ScrubSink::with_layouts();
+        let output = parse_chunk_reader(
+            &mut &data[..],
+            data.len() as u64,
+            "",
+            "",
+            path,
+            prefabs,
+            metadata,
+            &mut sink,
+        )?;
+        Ok((output, sink.layouts.unwrap_or_default()))
+    };
+    let (before, layouts) = parse(bytes)?;
+    let body_start = layouts.first().map_or(6, |zdo| zdo.start as usize);
+    if body_start != 6 || layouts.last().map_or(6, |zdo| zdo.end as usize) != bytes.len() {
+        return Err(error(format!(
+            "{path}: chunk has bytes outside its ZDO records"
+        )));
+    }
+    let mut actions = Vec::new();
+    let plans = layouts
+        .iter()
+        .map(|zdo| plan_zdo(zdo, mode, bytes, path, prefabs, &mut actions))
+        .collect::<Result<Vec<_>, _>>()?;
+    if plans.iter().all(|plan| matches!(plan, ZdoPlan::Keep)) {
+        return Ok(RebuiltChunk {
+            bytes: Vec::new(),
+            changed: false,
+            zdo_count_before: before.zdo_count,
+            dropped: 0,
+            kept_object_flags: layouts.iter().map(|zdo| zdo.object_flags).sum(),
+            actions,
+        });
+    }
+
+    let mut out = bytes[..6].to_vec();
+    let mut dropped = 0u64;
+    let mut dropped_prefabs: HashMap<i32, u32> = HashMap::new();
+    let mut kept_object_flags = 0usize;
+    for (zdo, plan) in layouts.iter().zip(&plans) {
+        match plan {
+            ZdoPlan::Keep => out.extend_from_slice(&bytes[zdo.start as usize..zdo.end as usize]),
+            ZdoPlan::Drop => {
+                dropped += 1;
+                *dropped_prefabs.entry(zdo.owner_prefab_hash).or_default() += 1;
+                continue;
+            }
+            ZdoPlan::Edit {
+                removals,
+                overwrites,
+            } => out.extend(edit_zdo_record(bytes, zdo, removals, overwrites, path)?),
+        }
+        kept_object_flags += zdo.object_flags;
+    }
+    let count_after = before.zdo_count - dropped;
+    out[2..6].copy_from_slice(&(count_after as i32).to_le_bytes());
+
+    // Verify against a fresh parse of the result.
+    let (after, new_layouts) = parse(&out)?;
+    let kept: Vec<(&ZdoLayout, &ZdoPlan)> = layouts
+        .iter()
+        .zip(&plans)
+        .filter(|(_, plan)| !matches!(plan, ZdoPlan::Drop))
+        .collect();
+    if after.zdo_count != count_after || new_layouts.len() != kept.len() {
+        return Err(error(format!(
+            "{path}: rebuilt chunk has the wrong ZDO count"
+        )));
+    }
+    for ((old, plan), new) in kept.iter().zip(&new_layouts) {
+        let old_bytes = &bytes[old.start as usize..old.end as usize];
+        let new_bytes = &out[new.start as usize..new.end as usize];
+        let fail = || error(format!("{path}: a kept ZDO record changed unexpectedly"));
+        match plan {
+            ZdoPlan::Keep => {
+                if old_bytes != new_bytes {
+                    return Err(fail());
+                }
+            }
+            ZdoPlan::Edit {
+                removals,
+                overwrites,
+            } => {
+                // The audited ints, as record-relative positions (the flag bit sits in an array).
+                let blank: Vec<u64> = overwrites
+                    .iter()
+                    .filter(|(_, new)| new.len() == 4)
+                    .map(|(at, _)| at - old.start)
+                    .collect();
+                if old.owner_prefab_hash != new.owner_prefab_hash
+                    || old.arrays.len() != new.arrays.len()
+                    || record_skeleton(bytes, old, &blank) != record_skeleton(&out, new, &blank)
+                {
+                    return Err(fail());
+                }
+                let old_items = record_items(bytes, old);
+                let new_items = record_items(&out, new);
+                for (index, (old_array, new_array)) in old_items.iter().zip(&new_items).enumerate()
+                {
+                    let layout = &old.arrays[index];
+                    let expected: Vec<Vec<u8>> = if layout.key == ITEM_DATA {
+                        // A stand's item data may differ only by the cleared flag bit.
+                        let mut item = old_array[0].to_vec();
+                        if let Some(bit) = layout.items[0].cheated_byte {
+                            let at = (bit - layout.len_offset - 4 - layout.items[0].start) as usize;
+                            item[at] &= 0xfe;
+                        }
+                        vec![item]
+                    } else {
+                        let removed = removals
+                            .iter()
+                            .find(|(array, _)| *array == index)
+                            .map(|(_, items)| items.as_slice())
+                            .unwrap_or(&[]);
+                        old_array
+                            .iter()
+                            .enumerate()
+                            .filter(|(item, _)| !removed.contains(item))
+                            .map(|(_, bytes)| bytes.to_vec())
+                            .collect()
+                    };
+                    let actual: Vec<Vec<u8>> = new_array.iter().map(|item| item.to_vec()).collect();
+                    if expected != actual || new.arrays[index].items.iter().any(|item| item.cheated)
+                    {
+                        return Err(fail());
+                    }
+                }
+            }
+            ZdoPlan::Drop => unreachable!(),
+        }
+    }
+    let mut expected_prefabs = before.prefabs.clone();
+    for (hash, count) in &dropped_prefabs {
+        if let Some(total) = expected_prefabs.get_mut(hash) {
+            *total -= count;
+            if *total == 0 {
+                expected_prefabs.remove(hash);
+            }
+        }
+    }
+    if after.prefabs != expected_prefabs {
+        return Err(error(format!(
+            "{path}: prefab histogram changed beyond the removed ZDOs"
+        )));
+    }
+    let object_evidence = after
+        .evidence
+        .iter()
+        .filter(|hit| matches!(hit.kind.as_str(), "zdo_cheated" | "station_queued_cheated"))
+        .count();
+    let expected_object_evidence = match mode {
+        ScrubMode::Destroy => 0,
+        _ => kept_object_flags,
+    };
+    if object_evidence != after.evidence.len() || object_evidence != expected_object_evidence {
+        return Err(error(format!(
+            "{path}: {} cheat evidence entries remain after scrubbing, expected {expected_object_evidence}",
+            after.evidence.len()
+        )));
+    }
+    Ok(RebuiltChunk {
+        bytes: out,
+        changed: true,
+        zdo_count_before: before.zdo_count,
+        dropped,
+        kept_object_flags,
+        actions,
+    })
+}
+
+/// Checks that every tar header is a plain file or a directory, whose sizes this scrub can
+/// rewrite; extended (pax, GNU long-name) headers could carry a size of their own.
+fn reject_extended_tar_headers(bytes: &[u8]) -> Result<(), ScanError> {
+    let mut tar = TarStream::new(bytes);
+    while let Some(header) = tar.next_header()? {
+        if !matches!(header.kind, 0 | b'0' | b'5') {
+            return Err(error(format!(
+                "the backup uses a tar entry type ({}) whose size this scrub cannot rewrite; use \
+                 the clean mode",
+                header.kind as char
+            )));
+        }
+        let padding = (512 - (header.size % 512)) % 512;
+        skip_bytes(&mut tar.reader, header.size + padding)?;
+    }
+    Ok(())
+}
+
+/// Replaces the bodies of the given tar entries (by body offset), rewriting each header's size and
+/// checksum and the padding; every other byte of the tar is copied as it was.
+fn splice_tar(bytes: &[u8], mut replaced: Vec<(u64, &[u8])>) -> Result<Vec<u8>, ScanError> {
+    replaced.sort_by_key(|(offset, _)| *offset);
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0usize;
+    for (body_offset, body) in replaced {
+        let body_offset = body_offset as usize;
+        let header_offset = body_offset - 512;
+        let mut header = [0u8; 512];
+        header.copy_from_slice(&bytes[header_offset..body_offset]);
+        let old_size = parse_tar_octal(&header[124..136])? as usize;
+        out.extend_from_slice(&bytes[at..header_offset]);
+        header[124..135].copy_from_slice(format!("{:011o}", body.len()).as_bytes());
+        header[148..156].fill(b' ');
+        let checksum: u64 = header.iter().map(|byte| *byte as u64).sum();
+        header[148..154].copy_from_slice(format!("{checksum:06o}").as_bytes());
+        header[154] = 0;
+        out.extend_from_slice(&header);
+        out.extend_from_slice(body);
+        out.resize(out.len() + (512 - body.len() % 512) % 512, 0);
+        at = body_offset + old_size + (512 - old_size % 512) % 512;
+    }
+    out.extend_from_slice(&bytes[at..]);
+    Ok(out)
+}
+
+/// A scrub of a whole backup tar in any mode, returning the new tar. Clean is the same-length
+/// in-place patch (`scrub_tar_in_place`); the delete modes rebuild each affected chunk
+/// (`rebuild_chunk`), update the `.chunks` index counts in place, splice the resized chunks back
+/// into the tar with fixed headers, and rescan the result.
+pub fn scrub_tar(
+    bytes: &[u8],
+    prefabs: &PrefabNames,
+    mode: ScrubMode,
+) -> Result<(Vec<u8>, ScrubReport), ScanError> {
+    if mode == ScrubMode::Clean {
+        let (patched, outcome) = scrub_tar_in_place(bytes, prefabs)?;
+        return Ok((patched, ScrubReport::from_patches(&outcome)));
+    }
+    reject_extended_tar_headers(bytes)?;
+    let world = read_world_tar(bytes)?;
+    let mut report = ScrubReport {
+        mode,
+        zdo_count_before: 0,
+        zdo_count_after: 0,
+        actions: Vec::new(),
+    };
+    let mut rebuilt: Vec<(&ScrubbedFile, RebuiltChunk)> = Vec::new();
+    let mut kept_object_flags = 0usize;
+    for chunk in &world.chunks {
+        let result = rebuild_chunk(&chunk.bytes, &chunk.path, prefabs, &world.metadata, mode)?;
+        report.zdo_count_before += result.zdo_count_before;
+        report.zdo_count_after += result.zdo_count_before - result.dropped;
+        kept_object_flags += result.kept_object_flags;
+        if result.changed {
+            rebuilt.push((chunk, result));
+        }
+    }
+    if report.zdo_count_before != world.metadata_total as u64 {
+        return Err(error(format!(
+            "chunk total mismatch: metadata {}, parsed {}",
+            world.metadata_total, report.zdo_count_before
+        )));
+    }
+
+    // The `.chunks` index: [i16 version][i32 total][i32 entries][u16 chunk, u8 size, u32 version,
+    // i32 ZDOs]*; counts are patched in place, so its length never changes.
+    let index_file = world
+        .passthrough
+        .iter()
+        .find(|file| file.path.ends_with(".chunks"))
+        .ok_or_else(|| error("world archive has no chunk metadata (.chunks) file"))?;
+    let mut index = index_file.bytes.clone();
+    for (chunk, result) in &rebuilt {
+        let name = chunk.path.rsplit('/').next().unwrap_or(&chunk.path);
+        let (size, version, chunk_index) = parse_chunk_name(name)?;
+        let entry = world
+            .metadata
+            .iter()
+            .position(|meta| meta.chunk_index == chunk_index && meta.chunk_size == size)
+            .ok_or_else(|| error(format!("{name}: not listed in the chunk index")))?;
+        let meta = &world.metadata[entry];
+        let count_at = 10 + entry * 11 + 7;
+        let listed = i32::from_le_bytes(index[count_at..count_at + 4].try_into().unwrap());
+        if meta.revision != version || listed as u64 != result.zdo_count_before {
+            return Err(error(format!(
+                "{name}: chunk index entry does not match the chunk"
+            )));
+        }
+        let new_count = (result.zdo_count_before - result.dropped) as i32;
+        index[count_at..count_at + 4].copy_from_slice(&new_count.to_le_bytes());
+    }
+    index[2..6].copy_from_slice(&(report.zdo_count_after as i32).to_le_bytes());
+
+    let mut replaced: Vec<(u64, &[u8])> = rebuilt
+        .iter()
+        .map(|(chunk, result)| (chunk.tar_offset, result.bytes.as_slice()))
+        .collect();
+    replaced.push((index_file.tar_offset, index.as_slice()));
+    let out = splice_tar(bytes, replaced)?;
+    for (_, result) in rebuilt {
+        report.actions.extend(result.actions);
+    }
+
+    // The result must read back as a world with exactly the counts the rebuild claims.
+    let reread = read_world_tar(&out)?;
+    let rescanned = scan_tar_bytes(&out, "scrubbed.tar", prefabs)?;
+    let expected_evidence = if mode == ScrubMode::Destroy {
+        0
+    } else {
+        kept_object_flags
+    };
+    let object_evidence = rescanned
+        .evidence
+        .iter()
+        .filter(|hit| matches!(hit.kind.as_str(), "zdo_cheated" | "station_queued_cheated"))
+        .count();
+    if reread.metadata_total as u64 != report.zdo_count_after
+        || rescanned.zdo_count != report.zdo_count_after
+        || rescanned.evidence.len() != expected_evidence
+        || object_evidence != expected_evidence
+    {
+        return Err(error(format!(
+            "rescan of the scrubbed tar found {} ZDOs and {} evidence entries (expected {} and {})",
+            rescanned.zdo_count,
+            rescanned.evidence.len(),
+            report.zdo_count_after,
+            expected_evidence
+        )));
+    }
+    Ok((out, report))
 }
 
 /// Adds a content checksum to one zstd frame made without one, as a host's `.tar.zst` backup has:
@@ -2965,66 +3715,91 @@ fn verify_scrub(
     Ok(())
 }
 
-/// Deterministic, privacy-safe (no absolute paths, no player ids) JSON audit of every patch a
-/// scrub applied.
-fn scrub_audit_json(outcome: &ScrubOutcome) -> String {
-    let mut json = String::new();
-    json.push_str("{\"zdo_count\":");
-    json.push_str(&outcome.zdo_count.to_string());
-    json.push_str(",\"patch_count\":");
-    json.push_str(&outcome.patches.len().to_string());
-    json.push_str(",\"patches\":[");
-    for (index, patch) in outcome.patches.iter().enumerate() {
-        if index > 0 {
-            json.push(',');
-        }
-        json.push_str(&format!(
-            "{{\"file\":{},\"offset\":{},\"kind\":{},\"key\":{},\"prefab\":{},\"position\":{},\"old_value\":{},\"new_value\":{}}}",
-            json_string(&patch.file_path),
-            patch.offset,
-            json_string(patch.kind.as_str()),
-            json_string(&patch.key_name),
-            json_opt_string(patch.owner_prefab_name.as_deref()),
-            json_position(patch.position),
-            patch.old_value,
-            patch.new_value,
-        ));
-    }
-    json.push_str("]}");
-    json
+/// Deterministic, privacy-safe (no absolute paths, no player ids) JSON audit of everything a scrub
+/// did. Offsets are in the original file.
+fn scrub_audit_json(report: &ScrubReport) -> String {
+    let actions = report
+        .actions
+        .iter()
+        .map(|action| {
+            format!(
+                "{{\"action\":{},\"file\":{},\"offset\":{},\"key\":{},\"prefab\":{},\"item\":{},\"position\":{},\"contents\":{}}}",
+                json_string(action.action),
+                json_string(&action.file_path),
+                action.offset,
+                json_string(&action.key_name),
+                json_opt_string(action.owner_prefab_name.as_deref()),
+                json_opt_string(action.item_name.as_deref()),
+                json_position(action.position),
+                action.contents,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"mode\":{},\"zdo_count_before\":{},\"zdo_count_after\":{},\"action_count\":{},\"actions\":[{}]}}",
+        json_string(report.mode.as_str()),
+        report.zdo_count_before,
+        report.zdo_count_after,
+        report.actions.len(),
+        actions
+    )
 }
 
-/// Same audit as `scrub_audit_json`, as a Markdown table for a human to read.
-fn scrub_audit_markdown(outcome: &ScrubOutcome) -> String {
+/// Same audit as `scrub_audit_json`, as Markdown for a human to read.
+fn scrub_audit_markdown(report: &ScrubReport) -> String {
     fn cell(value: &str) -> String {
-        value.replace('|', "\\|").replace('\n', " ")
+        value.replace('|', r"\|").replace('\n', " ")
     }
-    let mut md = String::new();
-    md.push_str("# Scrub audit\n\n");
-    md.push_str(&format!(
-        "ZDO count: {}\n\nPatches applied: {}\n\n",
-        outcome.zdo_count,
-        outcome.patches.len()
-    ));
-    md.push_str("| file | offset | kind | key | prefab | position | old -> new |\n");
-    md.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
-    for patch in &outcome.patches {
+    let mut md = format!(
+        "# Scrub audit\n\nMode: {}\n\nZDOs: {} before, {} after\n\n",
+        report.mode.as_str(),
+        report.zdo_count_before,
+        report.zdo_count_after
+    );
+    let mut summary: Vec<(&str, usize, usize)> = Vec::new();
+    for action in &report.actions {
+        match summary
+            .iter_mut()
+            .find(|(name, _, _)| *name == action.action)
+        {
+            Some(row) => {
+                row.1 += 1;
+                row.2 += action.contents;
+            }
+            None => summary.push((action.action, 1, action.contents)),
+        }
+    }
+    for (name, count, contents) in &summary {
+        md.push_str(&format!("- {name}: {count}"));
+        if *contents > 0 {
+            md.push_str(&format!(" (holding {contents} item(s), gone with them)"));
+        }
+        md.push('\n');
+    }
+    md.push_str("\n| action | file | offset | key | prefab | item | position | contents |\n");
+    md.push_str("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    for action in &report.actions {
         md.push_str(&format!(
-            "| {} | {} | {} | {} | {} | ({:.1}, {:.1}, {:.1}) | {} -> {} |\n",
-            cell(&patch.file_path),
-            patch.offset,
-            patch.kind.as_str(),
-            cell(&patch.key_name),
-            patch
+            "| {} | {} | {} | {} | {} | {} | ({:.1}, {:.1}, {:.1}) | {} |\n",
+            action.action,
+            cell(&action.file_path),
+            action.offset,
+            cell(&action.key_name),
+            action
                 .owner_prefab_name
                 .as_deref()
                 .map(cell)
                 .unwrap_or_else(|| "-".to_string()),
-            patch.position.x,
-            patch.position.y,
-            patch.position.z,
-            patch.old_value,
-            patch.new_value,
+            action
+                .item_name
+                .as_deref()
+                .map(cell)
+                .unwrap_or_else(|| "-".to_string()),
+            action.position.x,
+            action.position.y,
+            action.position.z,
+            action.contents,
         ));
     }
     md
@@ -3040,7 +3815,8 @@ pub fn scrub_world_archive(
     output_dir: &Path,
     zstd_program: &str,
     prefabs: &PrefabNames,
-) -> Result<ScrubOutcome, ScanError> {
+    mode: ScrubMode,
+) -> Result<ScrubReport, ScanError> {
     let archive_dir = archive_path.parent().unwrap_or(Path::new("."));
     let archive_dir_abs = std::path::absolute(archive_dir).map_err(ScanError::from)?;
     let output_abs = std::path::absolute(output_dir).map_err(ScanError::from)?;
@@ -3069,22 +3845,36 @@ pub fn scrub_world_archive(
     }
 
     let bytes = decompress_zstd_to_vec(archive_path, zstd_program)?;
-    let outcome = scrub_world_tar_bytes(&bytes, prefabs)?;
+    let (files, report) = if mode == ScrubMode::Clean {
+        let outcome = scrub_world_tar_bytes(&bytes, prefabs)?;
+        let report = ScrubReport::from_patches(&outcome);
+        (outcome.files, report)
+    } else {
+        let (tar, report) = scrub_tar(&bytes, prefabs, mode)?;
+        let world = read_world_tar(&tar)?;
+        let mut files = world.chunks;
+        files.extend(world.passthrough);
+        (files, report)
+    };
 
-    if let Err(write_error) = write_scrub_output(output_dir, &outcome) {
+    if let Err(write_error) = write_scrub_output(output_dir, &files, &report) {
         let _ = std::fs::remove_dir_all(output_dir);
         return Err(write_error);
     }
-    if let Err(verify_error) = verify_scrub_output_on_disk(output_dir, &outcome) {
+    if let Err(verify_error) = verify_scrub_output_on_disk(output_dir, &files) {
         let _ = std::fs::remove_dir_all(output_dir);
         return Err(verify_error);
     }
-    Ok(outcome)
+    Ok(report)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn write_scrub_output(output_dir: &Path, outcome: &ScrubOutcome) -> Result<(), ScanError> {
-    for file in &outcome.files {
+fn write_scrub_output(
+    output_dir: &Path,
+    files: &[ScrubbedFile],
+    report: &ScrubReport,
+) -> Result<(), ScanError> {
+    for file in files {
         let target = output_dir.join(&file.path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
@@ -3095,12 +3885,12 @@ fn write_scrub_output(output_dir: &Path, outcome: &ScrubOutcome) -> Result<(), S
     }
     std::fs::write(
         output_dir.join("SCRUB_AUDIT.md"),
-        scrub_audit_markdown(outcome),
+        scrub_audit_markdown(report),
     )
     .map_err(|e| error(format!("cannot write scrub audit markdown: {e}")))?;
     std::fs::write(
         output_dir.join("scrub-audit.json"),
-        scrub_audit_json(outcome),
+        scrub_audit_json(report),
     )
     .map_err(|e| error(format!("cannot write scrub audit json: {e}")))?;
     Ok(())
@@ -3110,8 +3900,8 @@ fn write_scrub_output(output_dir: &Path, outcome: &ScrubOutcome) -> Result<(), S
 /// insurance against a filesystem-level surprise (partial write, wrong encoding, etc.) that the
 /// in-memory verification in `scrub_world_tar_bytes` cannot see.
 #[cfg(not(target_arch = "wasm32"))]
-fn verify_scrub_output_on_disk(output_dir: &Path, outcome: &ScrubOutcome) -> Result<(), ScanError> {
-    for file in &outcome.files {
+fn verify_scrub_output_on_disk(output_dir: &Path, files: &[ScrubbedFile]) -> Result<(), ScanError> {
+    for file in files {
         let target = output_dir.join(&file.path);
         let on_disk = std::fs::read(&target)
             .map_err(|e| error(format!("cannot read back {}: {e}", target.display())))?;
@@ -3143,7 +3933,7 @@ pub fn parse_chunk_bytes(
         source_name,
         prefabs,
         &[],
-        &mut Vec::new(),
+        &mut ScrubSink::default(),
     )?;
     let mut archive = ArchiveScan {
         archive: source_name.to_string(),
@@ -3273,7 +4063,7 @@ pub fn scan_archive(
                 internal_path,
                 prefabs,
                 &metadata,
-                &mut Vec::new(),
+                &mut ScrubSink::default(),
             )?;
             archive.format = "chunked_v41".to_string();
             merge_parse(&mut archive, output);
@@ -5042,26 +5832,19 @@ pub struct BrowserScrub {
     bytes: Vec<u8>,
     audit_json: String,
     audit_markdown: String,
-    zdo_flags: usize,
-    item_bits: usize,
-    zdo_count: u64,
+    zdo_count_before: u64,
+    zdo_count_after: u64,
 }
 
 #[cfg(target_arch = "wasm32")]
 impl BrowserScrub {
-    fn new((bytes, outcome): (Vec<u8>, ScrubOutcome)) -> Self {
-        let zdo_flags = outcome
-            .patches
-            .iter()
-            .filter(|patch| patch.kind == ScrubPatchKind::ZdoIntFlag)
-            .count();
+    fn new((bytes, report): (Vec<u8>, ScrubReport)) -> Self {
         Self {
             bytes,
-            audit_json: scrub_audit_json(&outcome),
-            audit_markdown: scrub_audit_markdown(&outcome),
-            zdo_flags,
-            item_bits: outcome.patches.len() - zdo_flags,
-            zdo_count: outcome.zdo_count,
+            audit_json: scrub_audit_json(&report),
+            audit_markdown: scrub_audit_markdown(&report),
+            zdo_count_before: report.zdo_count_before,
+            zdo_count_after: report.zdo_count_after,
         }
     }
 }
@@ -5074,6 +5857,7 @@ impl BrowserScrub {
         std::mem::take(&mut self.bytes)
     }
 
+    /// Every action taken; the page builds its preview from this.
     pub fn audit_json(&self) -> String {
         self.audit_json.clone()
     }
@@ -5082,16 +5866,12 @@ impl BrowserScrub {
         self.audit_markdown.clone()
     }
 
-    pub fn zdo_flags(&self) -> usize {
-        self.zdo_flags
+    pub fn zdo_count_before(&self) -> f64 {
+        self.zdo_count_before as f64
     }
 
-    pub fn item_bits(&self) -> usize {
-        self.item_bits
-    }
-
-    pub fn zdo_count(&self) -> f64 {
-        self.zdo_count as f64
+    pub fn zdo_count_after(&self) -> f64 {
+        self.zdo_count_after as f64
     }
 }
 
@@ -5134,17 +5914,21 @@ impl BrowserScanner {
         self.add_file_with_modified_unix(name, bytes, f64::NAN)
     }
 
-    /// Experimental Mode A scrub of a decompressed backup tar; never touches the scan results.
-    pub fn scrub_tar(&self, bytes: &[u8]) -> Result<BrowserScrub, JsValue> {
-        scrub_tar_in_place(bytes, &self.prefabs)
+    /// Experimental scrub of a decompressed backup tar in the given mode (`clean`,
+    /// `delete-items` or `destroy`); never touches the scan results.
+    pub fn scrub_tar(&self, bytes: &[u8], mode: &str) -> Result<BrowserScrub, JsValue> {
+        let mode = ScrubMode::parse(mode)
+            .ok_or_else(|| JsValue::from_str(&format!("unknown scrub mode {mode}")))?;
+        scrub_tar(bytes, &self.prefabs, mode)
             .map(BrowserScrub::new)
             .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
-    /// Experimental Mode A scrub of one standalone v41 chunk file.
+    /// Experimental clean-mode scrub of one standalone v41 chunk file. The delete modes need the
+    /// chunk index beside it, so they only run on whole backups.
     pub fn scrub_chunk(&self, name: &str, bytes: &[u8]) -> Result<BrowserScrub, JsValue> {
         scrub_chunk_in_place(bytes, name, &self.prefabs)
-            .map(BrowserScrub::new)
+            .map(|(bytes, outcome)| BrowserScrub::new((bytes, ScrubReport::from_patches(&outcome))))
             .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
@@ -5569,7 +6353,7 @@ mod tests {
             "00_00__1_1.chunk",
             &prefabs,
             &[],
-            &mut Vec::new(),
+            &mut ScrubSink::default(),
         )
         .unwrap();
 
@@ -5620,7 +6404,7 @@ mod tests {
             "00_00__1_1.chunk",
             &prefabs,
             &[],
-            &mut Vec::new(),
+            &mut ScrubSink::default(),
         )
         .unwrap();
         assert_eq!(output.zdo_count, 1);
@@ -5681,7 +6465,7 @@ mod tests {
             ..PrefabNames::default()
         };
         let chunk = scrub_test_chunk();
-        let mut patches = Vec::new();
+        let mut sink = ScrubSink::default();
         let mut reader = &chunk[..];
         parse_chunk_reader(
             &mut reader,
@@ -5691,9 +6475,10 @@ mod tests {
             "00_00__1_1.chunk",
             &prefabs,
             &[],
-            &mut patches,
+            &mut sink,
         )
         .unwrap();
+        let patches = sink.patches;
         assert_eq!(patches.len(), 2);
 
         let int_patch = patches
@@ -5868,6 +6653,242 @@ mod tests {
         assert!(patched.windows(admin.len()).any(|window| window == admin));
     }
 
+    fn named_item(name: &str, cheated: bool) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_i32(&mut bytes, 10000);
+        bytes.extend([0, 0, 0, 0x40]);
+        push_i32(&mut bytes, stable_hash(name));
+        bytes.push(u8::from(cheated));
+        bytes
+    }
+
+    fn inventory_of(items: &[(&str, bool)]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_i32(&mut bytes, 109);
+        push_u16(&mut bytes, items.len() as u16);
+        for (name, cheated) in items {
+            bytes.extend(named_item(name, *cheated));
+        }
+        bytes
+    }
+
+    fn zdo_record(prefab: &str, ints: &[(i32, i32)], arrays: &[(i32, Vec<u8>)]) -> Vec<u8> {
+        let mut flags = 0;
+        if !ints.is_empty() {
+            flags |= FLAG_INTS;
+        }
+        if !arrays.is_empty() {
+            flags |= FLAG_BYTE_ARRAYS;
+        }
+        let mut record = Vec::new();
+        push_u16(&mut record, flags);
+        record.extend([0u8; 12]);
+        push_i32(&mut record, stable_hash(prefab));
+        if !ints.is_empty() {
+            record.push(ints.len() as u8);
+            for (key, value) in ints {
+                push_i32(&mut record, *key);
+                push_i32(&mut record, *value);
+            }
+        }
+        if !arrays.is_empty() {
+            record.push(arrays.len() as u8);
+            for (key, data) in arrays {
+                push_i32(&mut record, *key);
+                push_i32(&mut record, data.len() as i32);
+                record.extend(data);
+            }
+        }
+        record
+    }
+
+    /// One chunk holding every case the delete modes distinguish, in order: A a flagged wall,
+    /// B a flagged dropped item, C a clean chest with one flagged item between two clean ones, D a
+    /// flagged chest with clean contents, E a stand holding a flagged item, F a clean floor.
+    fn mode_test_chunk() -> (Vec<u8>, PrefabNames) {
+        let direct = |name: &str| [109].into_iter().chain(named_item(name, true)).collect();
+        let records = [
+            zdo_record("stone_wall_4x2", &[(CHEATED, 1)], &[]),
+            zdo_record("Wood", &[], &[(ITEM_DATA, direct("Wood"))]),
+            zdo_record(
+                "piece_chest",
+                &[],
+                &[(
+                    ITEMS,
+                    inventory_of(&[("Coal", false), ("Silver", true), ("Stone", false)]),
+                )],
+            ),
+            zdo_record(
+                "piece_chest",
+                &[(CHEATED, 1)],
+                &[(ITEMS, inventory_of(&[("Resin", false), ("Flint", false)]))],
+            ),
+            zdo_record(
+                "itemstand",
+                &[(ITEM_INT, stable_hash("Silver")), (TYPE_INT, 1)],
+                &[(ITEM_DATA, direct("Silver"))],
+            ),
+            zdo_record("wood_floor", &[], &[]),
+        ];
+        let mut chunk = Vec::new();
+        push_i16(&mut chunk, 41);
+        push_i32(&mut chunk, records.len() as i32);
+        for record in records {
+            chunk.extend(record);
+        }
+        let names = [
+            "stone_wall_4x2",
+            "Wood",
+            "piece_chest",
+            "itemstand",
+            "wood_floor",
+            "Silver",
+        ];
+        let prefabs = PrefabNames {
+            names: names
+                .map(|name| (stable_hash(name), name.to_string()))
+                .to_vec(),
+            ..PrefabNames::default()
+        };
+        (chunk, prefabs)
+    }
+
+    fn surviving_prefabs(chunk: &[u8], prefabs: &PrefabNames) -> Vec<String> {
+        let mut sink = ScrubSink::with_layouts();
+        parse_chunk_reader(
+            &mut &chunk[..],
+            0,
+            "",
+            "",
+            "00_00__1_1.chunk",
+            prefabs,
+            &[],
+            &mut sink,
+        )
+        .unwrap();
+        sink.layouts
+            .unwrap()
+            .iter()
+            .map(|zdo| prefabs.name(zdo.owner_prefab_hash).unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn delete_items_mode_removes_only_flagged_items() {
+        let (chunk, prefabs) = mode_test_chunk();
+        let result = rebuild_chunk(
+            &chunk,
+            "00_00__1_1.chunk",
+            &prefabs,
+            &[],
+            ScrubMode::DeleteItems,
+        )
+        .unwrap();
+        assert_eq!(result.dropped, 1, "only the dropped item goes");
+        assert_eq!(
+            surviving_prefabs(&result.bytes, &prefabs),
+            [
+                "stone_wall_4x2",
+                "piece_chest",
+                "piece_chest",
+                "itemstand",
+                "wood_floor"
+            ]
+        );
+        let actions: Vec<&str> = result.actions.iter().map(|action| action.action).collect();
+        assert_eq!(
+            actions,
+            ["delete_item", "remove_from_container", "empty_stand"]
+        );
+        // Flagged objects keep their flags: the wall and the flagged chest.
+        let rescan = parse_chunk_bytes(&result.bytes, "00_00__1_1.chunk", &prefabs).unwrap();
+        assert_eq!(rescan.evidence.len(), 2);
+        assert!(rescan.evidence.iter().all(|hit| hit.kind == "zdo_cheated"));
+        // The clean chest keeps Coal and Stone, in order; the flagged Silver is gone.
+        let clean_chest = inventory_of(&[("Coal", false), ("Stone", false)]);
+        assert!(result
+            .bytes
+            .windows(clean_chest.len())
+            .any(|window| window == clean_chest));
+    }
+
+    #[test]
+    fn destroy_mode_destroys_flagged_objects_with_contents_and_nothing_else() {
+        let (chunk, prefabs) = mode_test_chunk();
+        let result = rebuild_chunk(
+            &chunk,
+            "00_00__1_1.chunk",
+            &prefabs,
+            &[],
+            ScrubMode::Destroy,
+        )
+        .unwrap();
+        assert_eq!(result.dropped, 3, "wall, dropped item and flagged chest");
+        assert_eq!(
+            surviving_prefabs(&result.bytes, &prefabs),
+            ["piece_chest", "itemstand", "wood_floor"]
+        );
+        let destroyed_chest = result
+            .actions
+            .iter()
+            .find(|action| action.action == "destroy" && action.contents > 0)
+            .unwrap();
+        assert_eq!(
+            destroyed_chest.contents, 2,
+            "its two clean items go with it"
+        );
+        let rescan = parse_chunk_bytes(&result.bytes, "00_00__1_1.chunk", &prefabs).unwrap();
+        assert!(rescan.evidence.is_empty(), "nothing flagged survives");
+    }
+
+    #[test]
+    fn delete_modes_rewrite_the_tar_index_and_headers_and_keep_other_files() {
+        let (chunk, prefabs) = mode_test_chunk();
+        let mut index = Vec::new();
+        push_i16(&mut index, 41);
+        push_i32(&mut index, 6);
+        push_i32(&mut index, 1);
+        push_u16(&mut index, 0);
+        index.push(1);
+        index.extend(1u32.to_le_bytes());
+        push_i32(&mut index, 6);
+        let mut tar = Vec::new();
+        append_tar_entry(
+            &mut tar,
+            "SaveDir/worlds_local/Dedicated/_main.1.chunks",
+            &index,
+        );
+        append_tar_entry(
+            &mut tar,
+            "SaveDir/worlds_local/Dedicated/00_00__1_1.chunk",
+            &chunk,
+        );
+        append_tar_entry(&mut tar, "SaveDir/adminlist.txt", b"not part of the world");
+        finish_tar(&mut tar);
+
+        let (out, report) = scrub_tar(&tar, &prefabs, ScrubMode::Destroy).unwrap();
+        assert_eq!((report.zdo_count_before, report.zdo_count_after), (6, 3));
+        let world = read_world_tar(&out).unwrap();
+        assert_eq!(world.metadata_total, 3);
+        let listed = i32::from_le_bytes(world.passthrough[0].bytes[17..21].try_into().unwrap());
+        assert_eq!(
+            listed, 3,
+            "the chunk's own index entry follows its new count"
+        );
+        let admin = b"not part of the world";
+        assert!(out.windows(admin.len()).any(|window| window == admin));
+        assert!(scan_tar_bytes(&out, "out.tar", &prefabs)
+            .unwrap()
+            .evidence
+            .is_empty());
+    }
+
+    #[test]
+    fn item_and_type_key_hashes_match_the_game() {
+        assert_eq!(stable_hash("item"), ITEM_INT);
+        assert_eq!(stable_hash("type"), TYPE_INT);
+    }
+
     #[test]
     fn scrub_chunk_in_place_clears_a_standalone_chunk() {
         let chunk = scrub_test_chunk();
@@ -5947,7 +6968,7 @@ mod tests {
             "00_00__1_1.chunk",
             &PrefabNames::default(),
             &[],
-            &mut Vec::new()
+            &mut ScrubSink::default()
         )
         .is_err());
     }
@@ -5970,7 +6991,7 @@ mod tests {
             "00_00__1_1.chunk",
             &PrefabNames::default(),
             &[],
-            &mut Vec::new()
+            &mut ScrubSink::default()
         )
         .is_err());
         let mut legacy = Vec::new();
