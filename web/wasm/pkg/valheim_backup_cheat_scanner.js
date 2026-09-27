@@ -208,7 +208,8 @@ export class BrowserScanner {
         }
     }
     /**
-    * Experimental Mode A scrub of one standalone v41 chunk file.
+    * Experimental clean-mode scrub of one standalone v41 chunk file. The delete modes need the
+    * chunk index beside it, so they only run on whole backups.
     * @param {string} name
     * @param {Uint8Array} bytes
     * @returns {BrowserScrub}
@@ -381,16 +382,20 @@ export class BrowserScanner {
         }
     }
     /**
-    * Experimental Mode A scrub of a decompressed backup tar; never touches the scan results.
+    * Experimental scrub of a decompressed backup tar in the given mode (`clean`,
+    * `delete-items` or `destroy`); never touches the scan results.
     * @param {Uint8Array} bytes
+    * @param {string} mode
     * @returns {BrowserScrub}
     */
-    scrub_tar(bytes) {
+    scrub_tar(bytes, mode) {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
             const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
             const len0 = WASM_VECTOR_LEN;
-            wasm.browserscanner_scrub_tar(retptr, this.__wbg_ptr, ptr0, len0);
+            const ptr1 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.browserscanner_scrub_tar(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1);
             var r0 = getInt32Memory0()[retptr / 4 + 0];
             var r1 = getInt32Memory0()[retptr / 4 + 1];
             var r2 = getInt32Memory0()[retptr / 4 + 2];
@@ -432,6 +437,7 @@ export class BrowserScrub {
         wasm.__wbg_browserscrub_free(ptr);
     }
     /**
+    * Every action taken; the page builds its preview from this.
     * @returns {string}
     */
     audit_json() {
@@ -489,23 +495,16 @@ export class BrowserScrub {
     /**
     * @returns {number}
     */
-    item_bits() {
-        const ret = wasm.browserscrub_item_bits(this.__wbg_ptr);
-        return ret >>> 0;
-    }
-    /**
-    * @returns {number}
-    */
-    zdo_count() {
-        const ret = wasm.browserscrub_zdo_count(this.__wbg_ptr);
+    zdo_count_after() {
+        const ret = wasm.browserscrub_zdo_count_after(this.__wbg_ptr);
         return ret;
     }
     /**
     * @returns {number}
     */
-    zdo_flags() {
-        const ret = wasm.browserscrub_zdo_flags(this.__wbg_ptr);
-        return ret >>> 0;
+    zdo_count_before() {
+        const ret = wasm.browserscrub_zdo_count_before(this.__wbg_ptr);
+        return ret;
     }
 }
 

@@ -21,6 +21,20 @@
 
 ### Added
 
+- **Three scrub modes**, in the browser panel and as `--scrub-mode` in the CLI: *clean* (clear every
+  flag, keep everything), *delete-items* (delete flagged items - dropped, in containers, on stands -
+  and leave other flagged objects as they are) and *destroy* (remove every flagged object with what it
+  holds, plus flagged items anywhere else). In the browser, "Prepare copy" runs the real scrub and
+  shows what it did grouped by kind, with warnings for portals, lost contents, building pieces,
+  creatures and stations, before the download can be enabled. The delete modes rebuild only the
+  changed chunks, patch the `.chunks` index counts, rewrite resized tar entries' headers, and verify
+  every chunk against a fresh parse (kept records byte-identical or changed only as audited; counts,
+  prefab histogram and remaining evidence off by exactly what was removed). On the owner's newest save
+  a local dedicated server loads all three results without errors (890,955 / 890,833 / 890,365 ZDOs);
+  destroy removes 469 flagged objects - 453 building pieces, 6 stations, 4 chests with 44 items, a
+  troll, a longship and a portal, whose partner is then unconnected (12 -> 11 portals). Browser output
+  matches the CLI's world files byte for byte and passes `zstd -t`. Ordinary scan reports are
+  byte-identical to before.
 - **Experimental scrub in the browser:** after a scan, "Clear cheat flags in a copy" (behind an
   acknowledgement) hands back a `.tar.zst` or `.tar` in the input's own format with a `-scrubbed`
   suffix (a lone v41 `.chunk` keeps its exact name, since the game only loads a chunk under the name

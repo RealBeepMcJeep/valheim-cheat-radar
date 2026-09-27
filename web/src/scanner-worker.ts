@@ -2,6 +2,7 @@ import { Zstd } from '@hpcc-js/wasm-zstd';
 import { Decompress } from 'fzstd';
 import init, { BrowserScanner, zstd_add_checksum } from '../wasm/pkg/valheim_backup_cheat_scanner.js';
 import { errorMessage } from './errors';
+import type { ScrubMode } from './scrub';
 import { MAX_DECOMPRESSED_BYTES, MAX_FILE_BYTES, scrubKind, scrubbedName, type FailedFile, type FinalReport, type ScanProgress, type ScrubResult, type WorkerRequest, type WorkerResponse, type WorkerResponseBody } from './scan';
 
 const COMPRESSED_CHUNK_BYTES = 1024 * 1024;
@@ -158,25 +159,29 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 // Experimental: a copy of the input with every cheat flag cleared, in the input's own format.
-async function scrub(id: number, name: string, buffer: ArrayBuffer): Promise<ScrubResult> {
+async function scrub(id: number, name: string, mode: ScrubMode, buffer: ArrayBuffer): Promise<ScrubResult> {
   if (buffer.byteLength > MAX_FILE_BYTES) {
     throw new Error(`file is too large (${Math.ceil(buffer.byteLength / 1048576)} MiB; limit ${MAX_FILE_BYTES / 1048576} MiB)`);
   }
   const kind = scrubKind(name);
   if (!kind) throw new Error('Only .tar.zst, .tar and v41 .chunk world files can be scrubbed; legacy .db worlds and character profiles are not supported.');
+  if (kind === 'chunk' && mode !== 'clean') {
+    throw new Error("A single .chunk file supports the clean mode only: the delete modes also update the world's chunk index, which only a whole .tar.zst or .tar backup carries.");
+  }
   const scanner = await getScanner();
   const progress = (stage: ScanProgress['stage'], percent: number, message: string) => post(id, { type: 'progress', progress: { stage, percent, message } });
   const tar = kind === 'tar.zst' ? decompressStreaming(buffer, id) : buffer;
-  progress('scrubbing', 40, 'clearing flags and verifying');
-  const scrubbed = kind === 'chunk' ? scanner.scrub_chunk(name, new Uint8Array(tar)) : scanner.scrub_tar(new Uint8Array(tar));
-  const zdoFlags = scrubbed.zdo_flags();
-  const itemBits = scrubbed.item_bits();
+  progress('scrubbing', 40, mode === 'clean' ? 'clearing flags and verifying' : 'rebuilding and verifying');
+  const scrubbed = kind === 'chunk' ? scanner.scrub_chunk(name, new Uint8Array(tar)) : scanner.scrub_tar(new Uint8Array(tar), mode);
   const auditJson = scrubbed.audit_json();
   const auditMarkdown = scrubbed.audit_markdown();
-  const zdoCount = scrubbed.zdo_count();
+  const zdoCountBefore = scrubbed.zdo_count_before();
+  const zdoCountAfter = scrubbed.zdo_count_after();
   let bytes = scrubbed.take_bytes();
   scrubbed.free();
-  if (zdoFlags + itemBits === 0) throw new Error('No cheat flags found in this file; there is nothing to clear.');
+  if ((JSON.parse(auditJson) as { action_count: number }).action_count === 0) {
+    throw new Error('This mode found nothing to change in this file.');
+  }
   if (kind === 'tar.zst') {
     progress('compressing', 60, 'compressing (zstd level 3)');
     // The reference zstd library at its default level, as the host's backups use; it has no
@@ -189,7 +194,7 @@ async function scrub(id: number, name: string, buffer: ArrayBuffer): Promise<Scr
     bytes = compressed;
   }
   progress('complete', 100, 'complete');
-  return { name: scrubbedName(name), bytes: bytes.buffer as ArrayBuffer, auditJson, auditMarkdown, zdoFlags, itemBits, zdoCount };
+  return { name: scrubbedName(name), mode, bytes: bytes.buffer as ArrayBuffer, auditJson, auditMarkdown, zdoCountBefore, zdoCountAfter };
 }
 
 function canonical(id: number, index: number): Promise<void> {
@@ -204,7 +209,7 @@ function handle(request: WorkerRequest): Promise<void> {
   if (request.type === 'canonical') return canonical(request.id, request.index);
   if (request.type === 'wasm') return Promise.resolve();
   if (request.type === 'scrub') {
-    return scrub(request.id, request.name, request.buffer)
+    return scrub(request.id, request.name, request.mode, request.buffer)
       .then((result) => post(request.id, { type: 'scrubbed', result }, [result.bytes]))
       .catch((error: unknown) => post(request.id, { type: 'error', message: errorMessage(error) }));
   }

@@ -1,3 +1,4 @@
+import type { ScrubMode } from './scrub';
 import type { Report } from './types';
 
 export const MAX_FILE_BYTES = 128 * 1024 * 1024;
@@ -7,8 +8,8 @@ export type ScanStage = 'reading' | 'decompressing' | 'parsing' | 'scrubbing' | 
 export type ScanProgress = { stage: ScanStage; percent: number; message: string };
 export type FailedFile = { name: string; error: string };
 export type FinalReport = { json: string; csv: string; markdown: string };
-/** A scrubbed copy in the same format and under the same name as the input file. */
-export type ScrubResult = { name: string; bytes: ArrayBuffer; auditJson: string; auditMarkdown: string; zdoFlags: number; itemBits: number; zdoCount: number };
+/** A scrubbed copy in the input file's format, with the audit of everything the scrub did. */
+export type ScrubResult = { name: string; mode: ScrubMode; bytes: ArrayBuffer; auditJson: string; auditMarkdown: string; zdoCountBefore: number; zdoCountAfter: number };
 
 /** Which world inputs the experimental scrub can hand back in their own format. */
 export function scrubKind(name: string): 'tar.zst' | 'tar' | 'chunk' | null {
@@ -32,7 +33,7 @@ export function scrubbedName(name: string): string {
 
 type WorkerRequestBody =
   | { type: 'scan'; name: string; modifiedUnixMillis: number; inputId: number; buffer: ArrayBuffer }
-  | { type: 'scrub'; name: string; buffer: ArrayBuffer }
+  | { type: 'scrub'; name: string; mode: ScrubMode; buffer: ArrayBuffer }
   | { type: 'wasm'; bytes: ArrayBuffer }
   | { type: 'canonical'; index: number }
   | { type: 'report'; failures: FailedFile[] };
@@ -98,14 +99,14 @@ export class ScannerWorkerClient {
     ) as Promise<void>;
   }
 
-  async scrubFile(file: File, onProgress?: (progress: ScanProgress) => void): Promise<ScrubResult> {
+  async scrubFile(file: File, mode: ScrubMode, onProgress?: (progress: ScanProgress) => void): Promise<ScrubResult> {
     if (file.size > MAX_FILE_BYTES) {
       throw new Error(`file is too large (${formatBytes(file.size)}; limit ${MAX_FILE_BYTES / 1048576} MiB)`);
     }
     const generation = this.generation;
     const buffer = await file.arrayBuffer();
     if (generation !== this.generation) throw new ScanCancelledError();
-    return this.send({ type: 'scrub', name: file.name, buffer }, [buffer], onProgress) as Promise<ScrubResult>;
+    return this.send({ type: 'scrub', name: file.name, mode, buffer }, [buffer], onProgress) as Promise<ScrubResult>;
   }
 
   setCanonical(index: number): Promise<void> {

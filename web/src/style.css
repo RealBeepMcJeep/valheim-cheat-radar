@@ -248,3 +248,9 @@ footer strong { color: var(--bone); }
 .scrub-list { display: grid; gap: 1rem; list-style: none; margin: 0; padding: 0; }
 .scrub-row { align-items: center; display: flex; flex-wrap: wrap; gap: .8rem; justify-content: space-between; }
 .scrub-status, .scrub-result p { color: var(--muted); font-size: .92rem; margin: .5rem 0 0; }
+.scrub-modes { border: 1px solid var(--line); display: grid; gap: .6rem; margin: 1rem 0; padding: .8rem 1rem; }
+.scrub-modes legend { color: var(--ember-bright); font: 700 .7rem ui-monospace, monospace; letter-spacing: .1em; padding: 0 .4rem; text-transform: uppercase; }
+.scrub-modes label { display: block; line-height: 1.5; }
+.scrub-modes span, .scrub-summary span { color: var(--muted); font-size: .9rem; }
+.scrub-summary { display: grid; gap: .3rem; margin: .6rem 0; padding-left: 1.2rem; }
+.scrub-warnings { background: rgba(184,74,55,.12); border-left: 3px solid var(--red); color: #f19b88; display: grid; font-size: .9rem; gap: .3rem; margin: .6rem 0; padding: .6rem .8rem .6rem 1.8rem; }

@@ -277,8 +277,10 @@ before an edited world is uploaded or it overwrites it on its next save.
       downloadable audit log. *(Worlds done, in the CLI and — experimental — in the browser, which
       returns the input's own format with a `-scrubbed` suffix plus the audit log. Still missing:
       character `.fch` scrubbing and a per-row preview.)*
-- [ ] Let users choose between clearing cheat bits and removing contaminated item/object records;
-      explain propagation and gameplay consequences.
+- [x] Let users choose between clearing cheat bits and removing contaminated item/object records;
+      explain propagation and gameplay consequences. *(Three modes — clean, delete-items,
+      destroy — in the CLI and the browser, whose preview lists what each did, with warnings for
+      portals, contents, structures, creatures and stations. Armor-stand slots are not handled yet.)*
 - [ ] Recompute required wrappers/checksums (including `.fch` SHA-512), preserve unknown fields, and
       reparse/verify every generated save before download.
 - [ ] Require an original backup and make destructive operations opt-in per row or selected group.

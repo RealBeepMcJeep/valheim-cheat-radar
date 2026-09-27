@@ -99,7 +99,11 @@ export function classify(row: Evidence): Category {
     case 'station_queued_cheated': return 'station';
     default: break;
   }
-  const name = row.owner_prefab_name ?? '';
+  return classifyPrefab(row.owner_prefab_name ?? '');
+}
+
+/** What kind of world object a prefab name is, from its name alone. */
+export function classifyPrefab(name: string): Category {
   if (!name) return 'other';
   if (CONTAINER_PREFAB.test(name)) return 'container';
   if (STATION_PREFAB.test(name)) return 'station';

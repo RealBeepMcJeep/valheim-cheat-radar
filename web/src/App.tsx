@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { FailedFile, FinalReport, ScanCancelledError, ScannerWorkerClient, formatBytes, parseReport, scrubKind } from './scan';
 import type { ScrubResult } from './scan';
+import { SCRUB_MODES, summarizeScrub } from './scrub';
+import type { ScrubAudit, ScrubMode } from './scrub';
 import { filterEvidence, multiArchiveHint, sortEvidence, timelineSummary } from './view';
 import { CLUSTER_RADIUS_OPTIONS, DEFAULT_CLUSTER_RADIUS, clusterEvidence, clusterSummaryLabel, evidenceLabel, spatialSort } from './tree';
 import type { ClusterOrder, TreeCluster } from './tree';
@@ -33,7 +35,7 @@ type QueueItem = {
 };
 
 type Tab = 'world' | 'characters' | 'timeline';
-type ScrubState = { status: 'running'; progress: string } | { status: 'done'; result: ScrubResult } | { status: 'error'; error: string };
+type ScrubState = { status: 'running'; progress: string } | { status: 'done'; result: ScrubResult; acknowledged: boolean } | { status: 'error'; error: string };
 
 // Revoking right after click can cancel a large download in some browsers, so revoke later.
 function saveFile(content: BlobPart, name: string, type: string): void {
@@ -63,7 +65,7 @@ export function App() {
   const [progressMessage, setProgressMessage] = useState('');
   const [exports, setExports] = useState<FinalReport | null>(null);
   const [copied, setCopied] = useState('');
-  const [scrubAcknowledged, setScrubAcknowledged] = useState(false);
+  const [scrubMode, setScrubMode] = useState<ScrubMode>('clean');
   const [scrubs, setScrubs] = useState<Record<number, ScrubState>>({});
   const client = useRef<ScannerWorkerClient | null>(null);
   const nextId = useRef(1);
@@ -168,17 +170,17 @@ export function App() {
   };
 
   const scrubItem = async (item: QueueItem) => {
-    if (busy || !scrubAcknowledged) return;
+    if (busy) return;
     const run = ++runGeneration.current;
     setBusy(true);
     setScrubs((current) => ({ ...current, [item.id]: { status: 'running', progress: 'starting' } }));
     try {
       const scanner = client.current ??= new ScannerWorkerClient();
-      const result = await scanner.scrubFile(item.file, (progress) => {
+      const result = await scanner.scrubFile(item.file, scrubMode, (progress) => {
         if (run !== runGeneration.current) return;
         setScrubs((current) => ({ ...current, [item.id]: { status: 'running', progress: progress.message } }));
       });
-      setScrubs((current) => ({ ...current, [item.id]: { status: 'done', result } }));
+      setScrubs((current) => ({ ...current, [item.id]: { status: 'done', result, acknowledged: false } }));
     } catch (error) {
       if (run !== runGeneration.current) return;
       const detail = error instanceof ScanCancelledError ? 'Cancelled.' : error instanceof Error ? error.message : 'Scrub failed.';
@@ -186,6 +188,13 @@ export function App() {
     } finally {
       if (run === runGeneration.current) setBusy(false);
     }
+  };
+
+  const acknowledgeScrub = (id: number, acknowledged: boolean) => {
+    setScrubs((current) => {
+      const state = current[id];
+      return state?.status === 'done' ? { ...current, [id]: { ...state, acknowledged } } : current;
+    });
   };
 
   const cancel = () => {
@@ -207,7 +216,7 @@ export function App() {
     setKind('all');
     setStatus('all');
     setScrubs({});
-    setScrubAcknowledged(false);
+    setScrubMode('clean');
   };
 
   const download = (extension: 'json' | 'csv' | 'md') => {
@@ -287,7 +296,7 @@ export function App() {
           <div><p className="eyebrow">EXPORT</p><h2 id="download-heading">Take the report with you</h2><p>Report downloads contain parsed evidence only.</p></div>
           <div className="download-actions"><button className="button" type="button" onClick={() => download('json')}>JSON</button><button className="button" type="button" onClick={() => download('csv')}>CSV</button><button className="button" type="button" onClick={() => download('md')}>Markdown</button></div>
         </section>
-        {queue.some((item) => item.status === 'done' && scrubKind(item.file.name)) && <ScrubPanel items={queue.filter((item) => item.status === 'done' && scrubKind(item.file.name))} scrubs={scrubs} acknowledged={scrubAcknowledged} setAcknowledged={setScrubAcknowledged} busy={busy} onScrub={scrubItem} />}
+        {queue.some((item) => item.status === 'done' && scrubKind(item.file.name)) && <ScrubPanel items={queue.filter((item) => item.status === 'done' && scrubKind(item.file.name))} scrubs={scrubs} mode={scrubMode} setMode={setScrubMode} busy={busy} onPrepare={scrubItem} onAcknowledge={acknowledgeScrub} />}
       </>}
 
       <footer><strong>Unofficial fan-made tool.</strong> Valheim is a trademark of its respective owner. No game assets, logos, fonts, or official screenshots are distributed here. This page never changes your files; the experimental scrub only creates a new copy.</footer>
@@ -298,44 +307,68 @@ export function App() {
 type ScrubPanelProps = {
   items: QueueItem[];
   scrubs: Record<number, ScrubState>;
-  acknowledged: boolean;
-  setAcknowledged: (value: boolean) => void;
+  mode: ScrubMode;
+  setMode: (mode: ScrubMode) => void;
   busy: boolean;
-  onScrub: (item: QueueItem) => void;
+  onPrepare: (item: QueueItem) => void;
+  onAcknowledge: (id: number, acknowledged: boolean) => void;
 };
 
-function ScrubPanel({ items, scrubs, acknowledged, setAcknowledged, busy, onScrub }: ScrubPanelProps) {
+function ScrubPanel({ items, scrubs, mode, setMode, busy, onPrepare, onAcknowledge }: ScrubPanelProps) {
+  const modeLabel = (value: ScrubMode) => SCRUB_MODES.find((entry) => entry.mode === value)?.label ?? value;
   return <section className="scrub panel" aria-labelledby="scrub-heading">
     <div className="section-heading">
-      <div><p className="eyebrow">EXPERIMENTAL</p><h2 id="scrub-heading">Clear cheat flags in a copy</h2></div>
+      <div><p className="eyebrow">EXPERIMENTAL</p><h2 id="scrub-heading">Scrub a copy</h2></div>
       <span className="experimental-badge">EXPERIMENTAL</span>
     </div>
-    <p className="explanation">Makes a new copy of a world backup with every cheat flag this scan found cleared, and keeps every object. Your original file is never changed. The copy has the original's format, so it can go back where it came from, and a <code>-scrubbed</code> suffix so the two are never mixed up: inside a <code>.tar.zst</code> every file and byte is the same except the flags, recompressed with the reference zstd library at its default level with a content checksum. A lone <code>.chunk</code> keeps its exact name, because the game only loads a chunk under the name its index lists.</p>
+    <p className="explanation">Makes a new copy of a world backup and never changes your original. The copy has the original's format, so it can go back where it came from, and a <code>-scrubbed</code> suffix so the two are never mixed up. Preparing a copy shows exactly what it changed before anything can be downloaded.</p>
+    <fieldset className="scrub-modes">
+      <legend>What to do with flagged content</legend>
+      {SCRUB_MODES.map((entry) => <label key={entry.mode}><input type="radio" name="scrub-mode" value={entry.mode} checked={mode === entry.mode} onChange={() => setMode(entry.mode)} /> <strong>{entry.label}</strong> <span>{entry.detail}</span></label>)}
+    </fieldset>
     <ul className="scrub-limits">
-      <li>Only flagged objects are cleared. Anything spawned with <code>bypasscheatchecks</code> on carries no flag.</li>
+      <li>Only flagged content is touched. Anything spawned with <code>bypasscheatchecks</code> on carries no flag.</li>
       <li>Items in players' own inventories live in their character files, not the world, and come back with them.</li>
-      <li>Clearing a flag erases the evidence. Keep the original backup and the audit log.</li>
-      <li>Stop the server before restoring the copy, or it overwrites it with the world it holds in memory.</li>
-      <li>This is experimental: try the copy on a test or local server first.</li>
+      <li>A scrub erases the evidence. Keep the original backup and the audit log.</li>
+      <li>Stop the server before restoring a copy, or it overwrites it with the world it holds in memory. Try the copy on a test or local server first.</li>
     </ul>
-    <label className="scrub-acknowledge"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.currentTarget.checked)} /> I have kept the original backup and understand this is experimental.</label>
     <ul className="scrub-list">{items.map((item) => {
       const state = scrubs[item.id];
+      const chunkOnly = /\.chunk$/i.test(item.file.name) && mode !== 'clean';
       return <li key={item.id}>
-        <div className="scrub-row"><span className="queue-name">{item.file.name}</span><button className="button" type="button" disabled={!acknowledged || busy} onClick={() => onScrub(item)}>Clear flags in a copy</button></div>
+        <div className="scrub-row"><span className="queue-name">{item.file.name}</span><button className="button" type="button" disabled={busy || chunkOnly} onClick={() => onPrepare(item)}>Prepare copy: {modeLabel(mode)}</button></div>
+        {chunkOnly && <p className="scrub-status">A single .chunk file supports Clean only; the other modes also update the world's chunk index, which only a whole backup carries.</p>}
         {state?.status === 'running' && <p className="scrub-status" aria-live="polite">{state.progress}</p>}
         {state?.status === 'error' && <p className="inline-error" role="alert">{state.error}</p>}
-        {state?.status === 'done' && <div className="scrub-result">
-          <p>Cleared {state.result.zdoFlags.toLocaleString()} object flag(s) and {state.result.itemBits.toLocaleString()} item flag(s) across {state.result.zdoCount.toLocaleString()} objects. The copy was re-scanned (no flags left) and checked byte for byte before download. {formatBytes(state.result.bytes.byteLength)} (original {formatBytes(item.file.size)}).</p>
-          <div className="download-actions">
-            <button className="button primary" type="button" onClick={() => saveFile(state.result.bytes, state.result.name, 'application/octet-stream')}>Download {state.result.name}</button>
-            <button className="button" type="button" onClick={() => saveFile(state.result.auditMarkdown, `${state.result.name}.scrub-audit.md`, 'text/markdown')}>Audit (Markdown)</button>
-            <button className="button" type="button" onClick={() => saveFile(state.result.auditJson, `${state.result.name}.scrub-audit.json`, 'application/json')}>Audit (JSON)</button>
-          </div>
-        </div>}
+        {state?.status === 'done' && <ScrubResultView id={item.id} originalBytes={item.file.size} result={state.result} acknowledged={state.acknowledged} modeLabel={modeLabel(state.result.mode)} onAcknowledge={onAcknowledge} />}
       </li>;
     })}</ul>
   </section>;
+}
+
+type ScrubResultViewProps = {
+  id: number;
+  originalBytes: number;
+  result: ScrubResult;
+  acknowledged: boolean;
+  modeLabel: string;
+  onAcknowledge: (id: number, acknowledged: boolean) => void;
+};
+
+function ScrubResultView({ id, originalBytes, result, acknowledged, modeLabel, onAcknowledge }: ScrubResultViewProps) {
+  const summary = useMemo(() => summarizeScrub(JSON.parse(result.auditJson) as ScrubAudit), [result]);
+  const removed = result.zdoCountBefore - result.zdoCountAfter;
+  return <div className="scrub-result">
+    <p><strong>{modeLabel}:</strong> {result.zdoCountBefore.toLocaleString()} objects before, {result.zdoCountAfter.toLocaleString()} after{removed ? ` (${removed.toLocaleString()} removed)` : ''}. The copy was re-scanned and checked against the original before it was offered. {formatBytes(result.bytes.byteLength)} (original {formatBytes(originalBytes)}).</p>
+    <ul className="scrub-summary">{summary.lines.map((line) => <li key={line.label}><strong>{line.label}: {line.count.toLocaleString()}</strong> <span>{line.examples}</span></li>)}</ul>
+    {summary.warnings.length > 0 && <ul className="scrub-warnings" role="note">{summary.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
+    <label className="scrub-acknowledge"><input type="checkbox" checked={acknowledged} onChange={(event) => onAcknowledge(id, event.currentTarget.checked)} /> I have kept the original backup and accept these changes.</label>
+    <div className="download-actions">
+      <button className="button primary" type="button" disabled={!acknowledged} onClick={() => saveFile(result.bytes, result.name, 'application/octet-stream')}>Download {result.name}</button>
+      <button className="button" type="button" onClick={() => saveFile(result.auditMarkdown, `${result.name}.scrub-audit.md`, 'text/markdown')}>Audit (Markdown)</button>
+      <button className="button" type="button" onClick={() => saveFile(result.auditJson, `${result.name}.scrub-audit.json`, 'application/json')}>Audit (JSON)</button>
+    </div>
+  </div>;
 }
 
 function Queue({ items }: { items: QueueItem[] }) {
