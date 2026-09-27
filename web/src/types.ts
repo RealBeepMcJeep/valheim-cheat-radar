@@ -86,6 +86,13 @@ export type WorldMap = {
   biomes?: [number, number, number][];
   /** Biome names in the scanner's index order, for the legend. */
   biome_names?: string[];
+  /**
+   * Per-cell biome evidence for the cell popup: [cellX, cellZ, totalWeight, decidedBiomeIndex (-1
+   * when there is no verdict), decidedSharePercent, source ("real" | "hint" | "none"), top]. `top`
+   * is the richest [biomeIndex, weight] pairs (at most 3), richest first. Only cells that carry any
+   * biome-tagged evidence appear; a cell absent here has none at all.
+   */
+  biome_detail?: [number, number, number, number, number, string, [number, number][]][];
 };
 
 export type Report = {

@@ -3784,6 +3784,68 @@ fn browser_json_character(character: &CharacterScan, canonical_id: Option<i64>) 
     )
 }
 
+/// Top biome-vote weights for a cell, richest first, ties broken by biome index for a
+/// deterministic order. Zero-weight biomes are dropped rather than padded in.
+fn ranked_biome_votes(tally: &BiomeTally) -> Vec<(usize, u32)> {
+    let mut ranked = tally[..BIOME_COUNT]
+        .iter()
+        .enumerate()
+        .filter(|(_, weight)| **weight > 0)
+        .map(|(index, weight)| (index, *weight))
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    ranked.truncate(3);
+    ranked
+}
+
+/// Per-cell biome evidence behind the map popup: the combined tally's total weight, the decided
+/// verdict (if any) and which tally decided it, and the top vote weights — enough for a popup to
+/// show either the verdict or, when there is none, why ("too little evidence: 24 of 36" / "no clear
+/// winner: top share 48%"). Only cells that carry any biome-tagged evidence appear; a populated cell
+/// with none is left out, and the browser treats that the same as an all-zero entry.
+fn browser_biome_detail_json(latest: &ArchiveScan) -> String {
+    let empty = BiomeTally::default();
+    let cells = latest
+        .biomes
+        .keys()
+        .chain(latest.biomes_real.keys())
+        .collect::<std::collections::BTreeSet<_>>();
+    let body = cells
+        .iter()
+        .map(|cell| {
+            let real = latest.biomes_real.get(*cell).unwrap_or(&empty);
+            let combined = latest.biomes.get(*cell).unwrap_or(&empty);
+            let (decided, source) = match biome_verdict(real) {
+                Some(verdict) => (Some(verdict), "real"),
+                None => match biome_verdict(combined) {
+                    Some(verdict) => (Some(verdict), "hint"),
+                    None => (None, "none"),
+                },
+            };
+            let (decided_index, decided_share) = decided.unwrap_or((0, 0));
+            let top = ranked_biome_votes(combined)
+                .iter()
+                .map(|(index, weight)| format!("[{index},{weight}]"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let (x, z) = **cell;
+            format!(
+                "[{x},{z},{},{},{},{},[{top}]]",
+                combined[BIOME_TOTAL],
+                if decided.is_some() {
+                    decided_index as i64
+                } else {
+                    -1
+                },
+                decided_share,
+                json_string(source),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{body}]")
+}
+
 /// Spatial density for the map view: ZDO counts per world cell, taken from the
 /// newest archive (the current world state). Derived from the save alone, so the
 /// map needs no client-side cache.
@@ -3821,13 +3883,15 @@ fn browser_map_json(archives: &[ArchiveScan]) -> String {
         .map(|(_, name)| json_string(name))
         .collect::<Vec<_>>()
         .join(",");
+    let biome_detail = browser_biome_detail_json(latest);
     format!(
-        "{{\"cell_meters\":{},\"snapshot\":{},\"cells\":[{}],\"biomes\":[{}],\"biome_names\":[{}]}}",
+        "{{\"cell_meters\":{},\"snapshot\":{},\"cells\":[{}],\"biomes\":[{}],\"biome_names\":[{}],\"biome_detail\":{}}}",
         MAP_CELL_METERS,
         json_string(&browser_filename(&latest.snapshot)),
         body,
         biome_body,
-        biome_names
+        biome_names,
+        biome_detail
     )
 }
 
@@ -5505,8 +5569,69 @@ mod tests {
             json.contains("\"biomes\":[[0,0,1]]"),
             "only the strong cell is coloured: {json}"
         );
-        assert!(!json.contains("[5,5,"), "the thin cell stays blank");
+        assert!(
+            !json.contains("\"biomes\":[[0,0,1],[5,5"),
+            "the thin cell stays blank in the fill layer"
+        );
         assert!(json.contains("\"biome_names\":[\"meadows\",\"swamp\""));
+        // The thin cell still gets a `biome_detail` entry, so a popup on it can explain why it has
+        // no fill: too little evidence (12 of the 36-weight bar).
+        assert!(
+            json.contains(r#"[5,5,12,-1,0,"none",[[1,12]]]"#),
+            "thin cell explains itself in biome_detail: {json}"
+        );
+    }
+
+    #[test]
+    fn biome_detail_json_reports_verdict_and_source_or_the_reason_for_none() {
+        let mut archive = browser_archive("latest", &[]);
+        // (0,0): real evidence alone is decisive — swamp (index 1), 100% share.
+        let mut decisive_real = [0u32; BIOME_COUNT + 1];
+        decisive_real[1] = 36;
+        decisive_real[BIOME_TOTAL] = 36;
+        archive.biomes_real.insert((0, 0), decisive_real);
+        archive.biomes.insert((0, 0), decisive_real);
+        // (1, 1): real evidence is too thin, but hint-derived votes in the combined tally decide it —
+        // mountain (index 2) at 100%.
+        let mut thin_real = [0u32; BIOME_COUNT + 1];
+        thin_real[2] = 12;
+        thin_real[BIOME_TOTAL] = 12;
+        archive.biomes_real.insert((1, 1), thin_real);
+        let mut hint_combined = [0u32; BIOME_COUNT + 1];
+        hint_combined[2] = 48;
+        hint_combined[BIOME_TOTAL] = 48;
+        archive.biomes.insert((1, 1), hint_combined);
+        // (2, 2): total weight never clears the 36-weight bar.
+        let mut too_thin = [0u32; BIOME_COUNT + 1];
+        too_thin[0] = 24;
+        too_thin[BIOME_TOTAL] = 24;
+        archive.biomes.insert((2, 2), too_thin);
+        archive.biomes_real.insert((2, 2), too_thin);
+        // (3, 3): plenty of weight but no biome clears the 60% share bar.
+        let mut no_winner = [0u32; BIOME_COUNT + 1];
+        no_winner[0] = 24;
+        no_winner[2] = 24;
+        no_winner[BIOME_TOTAL] = 48;
+        archive.biomes.insert((3, 3), no_winner);
+        archive.biomes_real.insert((3, 3), no_winner);
+
+        let detail = browser_biome_detail_json(&archive);
+        assert!(
+            detail.contains(r#"[0,0,36,1,100,"real",[[1,36]]]"#),
+            "decisive real cell: {detail}"
+        );
+        assert!(
+            detail.contains(r#"[1,1,48,2,100,"hint",[[2,48]]]"#),
+            "hint-decided cell: {detail}"
+        );
+        assert!(
+            detail.contains(r#"[2,2,24,-1,0,"none",[[0,24]]]"#),
+            "too-little-evidence cell: {detail}"
+        );
+        assert!(
+            detail.contains(r#"[3,3,48,-1,0,"none",[[0,24],[2,24]]]"#),
+            "no-clear-winner cell: {detail}"
+        );
     }
 
     #[test]
