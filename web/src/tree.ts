@@ -120,6 +120,8 @@ export type TreeCluster = {
   located: boolean;
   count: number;
   groups: TreeGroup[];
+  /** Dominant chunk this cluster's evidence comes from, e.g. "00_00__0_1.chunk +2"; null with no chunk provenance. */
+  chunkLabel: string | null;
 };
 
 export const CLUSTER_RADIUS_OPTIONS = [10, 30, 50, 100];
@@ -154,6 +156,30 @@ function groupByCategory(rows: Evidence[]): TreeGroup[] {
     if (!grouped) return [];
     return [{ category, label: CATEGORY_LABELS[category], rows: [...grouped].sort(byNameThenPosition) }];
   });
+}
+
+/**
+ * The chunk most of a cluster's evidence came from, plus a "+N" count of the other distinct
+ * chunks it also touches. Chunk grouping is unsuitable as the *clustering* key (see below), but
+ * it is still a useful *label* once a cluster already exists.
+ */
+export function clusterChunkLabel(rows: Evidence[]): string | null {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.chunk) continue;
+    counts.set(row.chunk, (counts.get(row.chunk) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  let dominant = '';
+  let dominantCount = -1;
+  for (const [chunk, count] of counts) {
+    if (count > dominantCount || (count === dominantCount && chunk < dominant)) {
+      dominant = chunk;
+      dominantCount = count;
+    }
+  }
+  const extra = counts.size - 1;
+  return extra > 0 ? `${dominant} +${extra}` : dominant;
 }
 
 /**
@@ -210,6 +236,7 @@ export function clusterEvidence(rows: Evidence[], radius: number): TreeCluster[]
     located: true,
     count: bucket.length,
     groups: groupByCategory(bucket),
+    chunkLabel: clusterChunkLabel(bucket),
   }));
 
   // Biggest site first: that is where cleanup effort pays off.
@@ -223,8 +250,43 @@ export function clusterEvidence(rows: Evidence[], radius: number): TreeCluster[]
       located: false,
       count: unlocated.length,
       groups: groupByCategory(unlocated),
+      chunkLabel: clusterChunkLabel(unlocated),
     });
   }
 
   return clusters;
+}
+
+export type ClusterOrder = 'size' | 'spatial';
+
+/**
+ * Reorders clusters so nearby ones sit next to each other, instead of biggest-first.
+ *
+ * ponytail: a greedy nearest-neighbour chain from the westernmost cluster, O(n^2) in the cluster
+ * count (small — clusters, not evidence rows). Not a true shortest path (that's TSP); good enough
+ * to walk a list without backtracking across the map. Swap in a proper tour if cluster counts ever
+ * grow into the hundreds.
+ */
+export function spatialSort(clusters: TreeCluster[]): TreeCluster[] {
+  const unlocated = clusters.filter((cluster) => !cluster.centroid);
+  const remaining = clusters.filter((cluster): cluster is TreeCluster & { centroid: Centroid } => cluster.centroid !== null);
+  if (remaining.length <= 1) return [...remaining, ...unlocated];
+
+  remaining.sort((left, right) => left.centroid.x - right.centroid.x);
+  const ordered = [remaining.shift()!];
+  while (remaining.length) {
+    const from = ordered[ordered.length - 1].centroid;
+    let bestIndex = 0;
+    let bestDistance = Infinity;
+    for (let index = 0; index < remaining.length; index += 1) {
+      const to = remaining[index].centroid;
+      const distance = (to.x - from.x) ** 2 + (to.y - from.y) ** 2 + (to.z - from.z) ** 2;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    }
+    ordered.push(remaining.splice(bestIndex, 1)[0]);
+  }
+  return [...ordered, ...unlocated];
 }

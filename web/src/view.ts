@@ -53,6 +53,13 @@ function valueFor(row: Evidence, key: SortKey): string | number {
   }
 }
 
+/** Shown only with exactly one world archive loaded — the case where status classification is a no-op. */
+export function multiArchiveHint(archiveCount: number): string | null {
+  return archiveCount === 1
+    ? 'Only one save is loaded, so every record shows as observed. Add an earlier backup of the same world to classify rows as new, persisted, or removed_or_cleared.'
+    : null;
+}
+
 export function timelineSummary(archiveCount: number): string {
   return archiveCount < 2
     ? 'One save reports each logical occurrence as observed. It cannot establish a universal ZDO creation time or continuity; add multiple dated saves for approximate first/last-seen history.'
