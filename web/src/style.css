@@ -133,6 +133,7 @@ details summary { color: var(--blue); cursor: pointer; }
 .world-flags li { color: var(--muted); font: .78rem ui-monospace, monospace; }
 .world-flags code { color: var(--ember-bright); }
 .timeline-world-meta { align-items: baseline; color: var(--muted); display: flex; flex-wrap: wrap; font: .78rem ui-monospace, monospace; gap: .6rem; margin: .4rem 0 0; }
+.multi-archive-hint { margin-bottom: 1rem; }
 
 .tree-groups { display: grid; gap: .1rem; padding: .4rem .6rem .6rem 1.3rem; }
 .tree-group > summary { align-items: baseline; cursor: pointer; display: flex; gap: .8rem; padding: .45rem .4rem; }
