@@ -257,7 +257,7 @@ export function App() {
         </section>
       </>}
 
-      <footer><strong>Unofficial fan-made tool.</strong> Valheim is a trademark of its respective owner. No game assets, logos, fonts, or official screenshots are distributed here. Save scrubbing/editing is planned, not available.</footer>
+      <footer><strong>Unofficial fan-made tool.</strong> Valheim is a trademark of its respective owner. No game assets, logos, fonts, or official screenshots are distributed here. This page never edits a save; clearing cheat flags on a copy is available in the command-line tool.</footer>
     </div>
   );
 }

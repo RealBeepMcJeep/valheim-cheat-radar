@@ -10,8 +10,31 @@
   tree-hint votes only fill in a cell when real evidence is too thin to decide. On the owner's real
   saves this took mountain from 188 to 436 coloured cells (was 412 before the flora-hint feature, so
   this recovers and then some) while overall coverage still rose, 54% to 58% of populated cells.
+- The biome legend's labels and counts no longer pile on top of each other: each entry was styled as
+  a fixed-size status dot.
 
 ### Added
+
+- **Mode A scrub (CLI):** `--scrub-world ARCHIVE --scrub-out DIR` clears every cheat flag the scanner
+  finds — `cheated`/`cheatedQueued[+slot]` ZDO ints and each item's cheated bit — on a copy of a v41
+  world, keeping every object. Each patch is a same-length in-place byte change, checked against the
+  bytes actually there before it is applied; the output is then verified (only audited bytes differ,
+  a re-parse finds zero flags with an unchanged ZDO count and layout, and every written file is read
+  back) or deleted. It refuses to write into a non-empty directory or next to the input, fails closed
+  on legacy or unrecognized world files, and writes `SCRUB_AUDIT.md` / `scrub-audit.json`. On the
+  owner's newest save: 469 ZDO flags and 168 item bits cleared, exactly 637 bytes changed, and a local
+  dedicated server loaded the result with the same log as the original.
+- World details in the browser: world name, version, seed (with a copy control), player count and
+  progression flags in a masthead panel for the newest save, and per archive on the Timeline cards.
+- A hint, when only one save is loaded, that adding an earlier one classifies rows as new / persisted /
+  removed_or_cleared.
+- Location-tree clusters are labelled with their dominant chunk, and a "Nearby together" order chains
+  neighbouring clusters.
+- Map: clicking any cell shows its ZDO count and biome verdict or why there is none, whether the verdict
+  needed flora-hint votes, and the top vote weights (`biome_detail` in the map JSON).
+- Map: nearby evidence markers collapse into a count badge that splits as you zoom; clicking a badge
+  lists every record in it.
+- Map: density is a log-scaled multi-stop gradient with a legend, plus a 1000 m world grid and a scale.
 
 - Biome inference from content for the map: every ZDO whose prefab the game tags with a biome votes
   for that biome in its 64 m cell, weighted `12 / biomes` so a prefab tagged with many biomes counts

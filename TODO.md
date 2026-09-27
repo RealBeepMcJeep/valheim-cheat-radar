@@ -121,11 +121,11 @@ Working data for these checks lives outside the repository at
       expandable leaf details.
 - [x] Interactive map view (Leaflet on `CRS.Simple`) with a ZDO-density heatmap, status-coloured
       evidence markers, cluster popups, and pan/zoom/pinch.
-- [ ] Label each cluster with its chunk name and offer a spatial sort, so nearby sites sit together in
+- [x] Label each cluster with its chunk name and offer a spatial sort, so nearby sites sit together in
       the list. Chunk grouping itself is unsuitable — one chunk spans ~14 distinct sites and splits
       ~10% of true 30 m neighbours.
 - [ ] Broader browser compatibility coverage.
-- [ ] Surface world metadata in the browser UI: the world name, seed, player count and progression
+- [x] Surface world metadata in the browser UI: the world name, seed, player count and progression
       flags are in the browser report JSON but nothing renders them yet (the seed also unlocks an
       opt-in terrain/minimap overlay, see below).
 - [x] Attach the single-file build automatically: publishing a release (or dispatching the workflow
@@ -244,9 +244,9 @@ There is no biome estimate, and nothing stores per-cell prefab composition.
       with one colour per biome (meadow green, black forest darker green, mountain white/grey, plains
       tan, swamp murky green, ashlands dark red, mistlands purple-grey, ocean deep blue).
 
-- [ ] Cluster or spiderfy markers in the map view: a dense base stacks dozens of rings on one spot,
+- [x] Cluster or spiderfy markers in the map view: a dense base stacks dozens of rings on one spot,
       which is clickable but unreadable at a glance.
-- [ ] Give the ZDO-density layer an intensity gradient plus a metric scale/grid, so a hotspot reads as
+- [x] Give the ZDO-density layer an intensity gradient plus a metric scale/grid, so a hotspot reads as
       a hotspot and its coordinates can be matched against the in-game map.
 - [ ] Measure on the real archives before trusting the layer: share of ZDO hashes classified, share of
       populated cells that get a verdict, and a spot check that unambiguous cells agree (silver ore →
@@ -265,15 +265,23 @@ content inference above:
 
 ## Safe save scrubbing
 
-- [ ] Keep scanning read-only by default; never overwrite an uploaded save.
+Done so far (Mode A, 2026-09-27): `--scrub-world ARCHIVE --scrub-out DIR` in the CLI clears every
+cheat flag on a copy of a v41 world as same-length byte patches, keeps every object, verifies the
+result, and writes an audit log (format notes in FORMAT.md). Limits that apply to any scrub: objects
+spawned under `bypasscheatchecks 1` carry no flag (`Terminal.cs:1492`), items in players' own `.fch`
+inventories are not in the world, clearing a flag erases the evidence, and the server must be stopped
+before an edited world is uploaded or it overwrites it on its next save.
+
+- [x] Keep scanning read-only by default; never overwrite an uploaded save.
 - [ ] Offer an explicit "scrub a copy" workflow for world and character saves, with a preview/diff and a
-      downloadable audit log.
+      downloadable audit log. *(World done in the CLI with an audit log; still missing: character
+      `.fch` scrubbing, and the browser workflow with a preview.)*
 - [ ] Let users choose between clearing cheat bits and removing contaminated item/object records;
       explain propagation and gameplay consequences.
 - [ ] Recompute required wrappers/checksums (including `.fch` SHA-512), preserve unknown fields, and
       reparse/verify every generated save before download.
 - [ ] Require an original backup and make destructive operations opt-in per row or selected group.
-- [ ] Add round-trip fixtures and cross-check edited saves against the matching Valheim build.
+- [x] Add round-trip fixtures and cross-check edited saves against the matching Valheim build.
 
 ## Forensic timeline research
 
