@@ -2857,11 +2857,24 @@ pub fn scrub_chunk_in_place(
     Ok((patched, outcome))
 }
 
-/// One zstd frame with an XXH64 content checksum and no stored content size, the same shape as a
-/// host's `.tar.zst` backup. Level is ruzstd's "Fastest" (about zstd level 1), so the file is
-/// somewhat larger than the host's, and any zstd reader decodes it the same way.
-pub fn zstd_compress(bytes: &[u8]) -> Vec<u8> {
-    ruzstd::encoding::compress_to_vec(bytes, ruzstd::encoding::CompressionLevel::Fastest)
+/// Adds a content checksum to one zstd frame made without one, as a host's `.tar.zst` backup has:
+/// sets `Content_Checksum_Flag` (bit 2 of the frame header descriptor) and appends the low 32 bits
+/// of XXH64(content, seed 0), exactly as RFC 8878 section 3.1.1 lays it out. `frame` must be a
+/// single frame whose decompressed bytes are `content`; the caller verifies the round trip.
+pub fn add_zstd_content_checksum(frame: &[u8], content: &[u8]) -> Result<Vec<u8>, ScanError> {
+    const MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+    const CHECKSUM_FLAG: u8 = 0x04;
+    if frame.len() < 6 || frame[..4] != MAGIC {
+        return Err(error("not a zstd frame"));
+    }
+    if frame[4] & CHECKSUM_FLAG != 0 {
+        return Err(error("zstd frame already carries a content checksum"));
+    }
+    let mut out = frame.to_vec();
+    out[4] |= CHECKSUM_FLAG;
+    let checksum = twox_hash::XxHash64::oneshot(0, content) as u32;
+    out.extend_from_slice(&checksum.to_le_bytes());
+    Ok(out)
 }
 
 /// Overwrites one patch's bytes in `buffer`, after confirming the bytes actually there still match
@@ -5084,8 +5097,8 @@ impl BrowserScrub {
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
-pub fn zstd_compress_bytes(bytes: &[u8]) -> Vec<u8> {
-    zstd_compress(bytes)
+pub fn zstd_add_checksum(frame: &[u8], content: &[u8]) -> Result<Vec<u8>, JsValue> {
+    add_zstd_content_checksum(frame, content).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -5871,21 +5884,30 @@ mod tests {
         assert_eq!(changed, [29, 55]);
     }
 
+    /// A minimal single-segment zstd frame holding `content` in one raw block, without a checksum.
+    fn raw_zstd_frame(content: &[u8]) -> Vec<u8> {
+        assert!(content.len() < 256);
+        let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x20, content.len() as u8];
+        let block_header = ((content.len() as u32) << 3) | 1;
+        frame.extend_from_slice(&block_header.to_le_bytes()[..3]);
+        frame.extend_from_slice(content);
+        frame
+    }
+
     #[test]
-    fn zstd_compress_round_trips_with_a_checksummed_frame() {
-        let data: Vec<u8> = (0..200_000u32)
-            .flat_map(|n| (n % 251).to_le_bytes())
-            .collect();
-        let compressed = zstd_compress(&data);
-        assert_eq!(compressed[..4], [0x28, 0xb5, 0x2f, 0xfd], "zstd magic");
-        assert_ne!(compressed[4] & 0x04, 0, "content checksum flag set");
-        assert!(compressed.len() < data.len());
-        let mut decoded = Vec::new();
-        ruzstd::decoding::StreamingDecoder::new(&compressed[..])
-            .unwrap()
-            .read_to_end(&mut decoded)
-            .unwrap();
-        assert_eq!(decoded, data);
+    fn zstd_checksum_sets_the_flag_and_appends_xxh64_low_bits() {
+        let content = b"valheim cheat radar";
+        let frame = raw_zstd_frame(content);
+        let checked = add_zstd_content_checksum(&frame, content).unwrap();
+        assert_eq!(checked[4], frame[4] | 0x04);
+        assert_eq!(checked[5..frame.len()], frame[5..]);
+        let expected = twox_hash::XxHash64::oneshot(0, content) as u32;
+        assert_eq!(checked[frame.len()..], expected.to_le_bytes());
+        assert!(
+            add_zstd_content_checksum(&checked, content).is_err(),
+            "never twice"
+        );
+        assert!(add_zstd_content_checksum(b"not zstd", content).is_err());
     }
 
     #[test]

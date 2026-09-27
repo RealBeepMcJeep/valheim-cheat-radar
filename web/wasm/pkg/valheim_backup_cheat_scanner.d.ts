@@ -1,10 +1,11 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
-* @param {Uint8Array} bytes
+* @param {Uint8Array} frame
+* @param {Uint8Array} content
 * @returns {Uint8Array}
 */
-export function zstd_compress_bytes(bytes: Uint8Array): Uint8Array;
+export function zstd_add_checksum(frame: Uint8Array, content: Uint8Array): Uint8Array;
 /**
 */
 export class BrowserScanner {
@@ -134,7 +135,7 @@ export interface InitOutput {
   readonly browserscrub_take_bytes: (a: number, b: number) => void;
   readonly browserscrub_zdo_count: (a: number) => number;
   readonly browserscrub_zdo_flags: (a: number) => number;
-  readonly zstd_compress_bytes: (a: number, b: number, c: number) => void;
+  readonly zstd_add_checksum: (a: number, b: number, c: number, d: number, e: number) => void;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;

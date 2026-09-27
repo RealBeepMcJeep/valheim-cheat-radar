@@ -23,7 +23,7 @@ export function browserscrub_item_bits(a: number): number;
 export function browserscrub_take_bytes(a: number, b: number): void;
 export function browserscrub_zdo_count(a: number): number;
 export function browserscrub_zdo_flags(a: number): number;
-export function zstd_compress_bytes(a: number, b: number, c: number): void;
+export function zstd_add_checksum(a: number, b: number, c: number, d: number, e: number): void;
 export function __wbindgen_add_to_stack_pointer(a: number): number;
 export function __wbindgen_malloc(a: number, b: number): number;
 export function __wbindgen_free(a: number, b: number, c: number): void;

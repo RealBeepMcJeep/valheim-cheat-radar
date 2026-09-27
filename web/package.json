@@ -12,6 +12,7 @@
     "build:single": "npm run build && node scripts/build-single-file.mjs"
   },
   "dependencies": {
+    "@hpcc-js/wasm-zstd": "1.16.1",
     "fzstd": "^0.1.1",
     "leaflet": "^1.9.4",
     "preact": "^10.26.9"

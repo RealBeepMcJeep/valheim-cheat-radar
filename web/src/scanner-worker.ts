@@ -1,7 +1,8 @@
+import { Zstd } from '@hpcc-js/wasm-zstd';
 import { Decompress } from 'fzstd';
-import init, { BrowserScanner, zstd_compress_bytes } from '../wasm/pkg/valheim_backup_cheat_scanner.js';
+import init, { BrowserScanner, zstd_add_checksum } from '../wasm/pkg/valheim_backup_cheat_scanner.js';
 import { errorMessage } from './errors';
-import { MAX_DECOMPRESSED_BYTES, MAX_FILE_BYTES, scrubKind, type FailedFile, type FinalReport, type ScanProgress, type ScrubResult, type WorkerRequest, type WorkerResponse, type WorkerResponseBody } from './scan';
+import { MAX_DECOMPRESSED_BYTES, MAX_FILE_BYTES, scrubKind, scrubbedName, type FailedFile, type FinalReport, type ScanProgress, type ScrubResult, type WorkerRequest, type WorkerResponse, type WorkerResponseBody } from './scan';
 
 const COMPRESSED_CHUNK_BYTES = 1024 * 1024;
 // SAFETY: this module is only ever loaded as a dedicated module Worker, where
@@ -175,15 +176,18 @@ async function scrub(id: number, name: string, buffer: ArrayBuffer): Promise<Scr
   scrubbed.free();
   if (zdoFlags + itemBits === 0) throw new Error('No cheat flags found in this file; there is nothing to clear.');
   if (kind === 'tar.zst') {
-    progress('compressing', 60, 'compressing (zstd)');
-    const compressed = zstd_compress_bytes(bytes);
+    progress('compressing', 60, 'compressing (zstd level 3)');
+    // The reference zstd library at its default level, as the host's backups use; it has no
+    // checksum switch, so the XXH64 content checksum those backups carry is added in Rust.
+    const zstd = await Zstd.load();
+    const compressed = zstd_add_checksum(zstd.compress(bytes, 3), bytes);
     // Decode with fzstd, an independent implementation, before anything leaves the worker.
     const roundTrip = new Uint8Array(decompressStreaming(compressed.buffer as ArrayBuffer, id, 'verifying'));
     if (!sameBytes(roundTrip, bytes)) throw new Error('compressed copy did not decompress to the scrubbed tar; nothing was saved');
     bytes = compressed;
   }
   progress('complete', 100, 'complete');
-  return { name, bytes: bytes.buffer as ArrayBuffer, auditJson, auditMarkdown, zdoFlags, itemBits, zdoCount };
+  return { name: scrubbedName(name), bytes: bytes.buffer as ArrayBuffer, auditJson, auditMarkdown, zdoFlags, itemBits, zdoCount };
 }
 
 function canonical(id: number, index: number): Promise<void> {

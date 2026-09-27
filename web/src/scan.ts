@@ -18,6 +18,18 @@ export function scrubKind(name: string): 'tar.zst' | 'tar' | 'chunk' | null {
   return null;
 }
 
+/**
+ * `backup.tar.zst` -> `backup-scrubbed.tar.zst`, so the copy never passes for the original. A lone
+ * `.chunk` keeps its name: the game only loads a chunk under the exact name its index lists and
+ * deletes any other `.chunk` in the world folder.
+ */
+export function scrubbedName(name: string): string {
+  const kind = scrubKind(name);
+  if (kind !== 'tar.zst' && kind !== 'tar') return name;
+  const extension = name.slice(name.length - (kind === 'tar.zst' ? 8 : 4));
+  return `${name.slice(0, name.length - extension.length)}-scrubbed${extension}`;
+}
+
 type WorkerRequestBody =
   | { type: 'scan'; name: string; modifiedUnixMillis: number; inputId: number; buffer: ArrayBuffer }
   | { type: 'scrub'; name: string; buffer: ArrayBuffer }

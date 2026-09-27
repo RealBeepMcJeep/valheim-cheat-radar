@@ -310,7 +310,7 @@ function ScrubPanel({ items, scrubs, acknowledged, setAcknowledged, busy, onScru
       <div><p className="eyebrow">EXPERIMENTAL</p><h2 id="scrub-heading">Clear cheat flags in a copy</h2></div>
       <span className="experimental-badge">EXPERIMENTAL</span>
     </div>
-    <p className="explanation">Makes a new copy of a world backup with every cheat flag this scan found cleared, and keeps every object. Your original file is never changed. The copy has the original's format and exact file name, so it can go back where it came from: inside a <code>.tar.zst</code> every file and byte is the same except the flags, and it is recompressed at a faster zstd level, so it is somewhat larger than the original.</p>
+    <p className="explanation">Makes a new copy of a world backup with every cheat flag this scan found cleared, and keeps every object. Your original file is never changed. The copy has the original's format, so it can go back where it came from, and a <code>-scrubbed</code> suffix so the two are never mixed up: inside a <code>.tar.zst</code> every file and byte is the same except the flags, recompressed with the reference zstd library at its default level with a content checksum. A lone <code>.chunk</code> keeps its exact name, because the game only loads a chunk under the name its index lists.</p>
     <ul className="scrub-limits">
       <li>Only flagged objects are cleared. Anything spawned with <code>bypasscheatchecks</code> on carries no flag.</li>
       <li>Items in players' own inventories live in their character files, not the world, and come back with them.</li>

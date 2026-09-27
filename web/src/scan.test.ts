@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { errorMessage } from './errors';
-import { ScannerWorkerClient, ScanCancelledError, scrubKind, type ScannerWorkerLike, type WorkerRequest, type WorkerResponse } from './scan';
+import { ScannerWorkerClient, ScanCancelledError, scrubKind, scrubbedName, type ScannerWorkerLike, type WorkerRequest, type WorkerResponse } from './scan';
 
 class FakeWorker implements ScannerWorkerLike {
   readonly messages: WorkerRequest[] = [];
@@ -94,5 +94,13 @@ describe('scrubKind', () => {
     expect(scrubKind('Dedicated.db')).toBeNull();
     expect(scrubKind('hero.fch')).toBeNull();
     expect(scrubKind('notes.tar.zst.txt')).toBeNull();
+  });
+});
+
+describe('scrubbedName', () => {
+  it('suffixes backups before the extension but keeps a chunk loadable', () => {
+    expect(scrubbedName('2026-09-25_abc-340946ab.tar.zst')).toBe('2026-09-25_abc-340946ab-scrubbed.tar.zst');
+    expect(scrubbedName('world.TAR')).toBe('world-scrubbed.TAR');
+    expect(scrubbedName('00_00__1_1.chunk')).toBe('00_00__1_1.chunk');
   });
 });
