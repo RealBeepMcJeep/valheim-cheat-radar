@@ -120,6 +120,33 @@ fn read_7bit<R: Read>(reader: &mut R) -> Result<usize, ScanError> {
     Err(error("invalid .NET 7-bit integer"))
 }
 
+/// Transparent `Read` pass-through that counts bytes consumed, so a chunk-file offset can be
+/// recovered for a scrub patch without changing what or how any byte is read. Wrapping an existing
+/// reader in this changes no parsing behaviour: every scan still reads the exact same bytes in the
+/// exact same order.
+struct CountingReader<R: Read> {
+    inner: R,
+    pos: u64,
+}
+
+impl<R: Read> CountingReader<R> {
+    fn new(inner: R) -> Self {
+        Self { inner, pos: 0 }
+    }
+
+    fn pos(&self) -> u64 {
+        self.pos
+    }
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        self.pos += read as u64;
+        Ok(read)
+    }
+}
+
 fn read_dotnet_bytes<R: Read>(reader: &mut R, output: &mut Vec<u8>) -> Result<(), ScanError> {
     let length = read_7bit(reader)?;
     if length > 128 * 1024 * 1024 {
@@ -327,6 +354,36 @@ pub struct ItemEvidence {
     pub crafter_id: Option<i64>,
     pub crafter_name: Option<String>,
     pub custom_keys: Vec<String>,
+    /// Byte offset of this item's trailing cheated-flag byte, relative to the start of the byte
+    /// slice this item was decoded from. `None` only when the item's format has no such byte
+    /// (never the case here: an `ItemEvidence` only exists because that byte's bit 0 was set).
+    pub cheated_byte_offset: Option<usize>,
+}
+
+/// One in-place, same-length byte patch the "Mode A" scrub applies to clear a cheat flag: a ZDO
+/// int flag's 4-byte value zeroed, or a single item byte's bit 0 cleared. See `scrub_world_tar_bytes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrubPatchKind {
+    /// A `cheated`/`cheatedQueued[+slot]` ZDO int value, zeroed in place.
+    ZdoIntFlag,
+    /// An item's trailing flags byte (`m_cheated`, bit 0), cleared in place.
+    ItemCheatedBit,
+}
+
+/// A single recorded patch location, found while parsing a v41 chunk file. `offset` is absolute
+/// within `file_path`. Old/new values are filled in when the patch is applied, read directly from
+/// the buffer at `offset` rather than trusted from the parse, so a mismatch fails closed instead of
+/// silently patching the wrong byte.
+#[derive(Debug, Clone)]
+pub struct ScrubPatch {
+    pub file_path: String,
+    pub offset: u64,
+    pub kind: ScrubPatchKind,
+    pub key_name: String,
+    pub owner_prefab_name: Option<String>,
+    pub position: Position,
+    pub old_value: i64,
+    pub new_value: i64,
 }
 
 struct Cursor<'a> {
@@ -419,7 +476,11 @@ impl<'a> Cursor<'a> {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct ItemSummary;
+struct ItemSummary {
+    /// Position, within the slice the enclosing `Cursor` was built over, of the trailing cheated
+    /// flags byte. `None` when this item's version has no such byte (106).
+    cheated_byte_pos: Option<usize>,
+}
 
 fn validate_item_version(version: i32, _allow_legacy_106: bool) -> Result<u8, ScanError> {
     match version {
@@ -458,8 +519,14 @@ fn scan_item(
             cursor.skip_string()?;
         }
     }
-    let cheated = (version >= 109 || version == 107) && cursor.u8()? & 1 != 0;
-    Ok((ItemSummary, cheated))
+    let (cheated_byte_pos, cheated) = if version >= 109 || version == 107 {
+        let pos = cursor.position;
+        let bit_set = cursor.u8()? & 1 != 0;
+        (Some(pos), bit_set)
+    } else {
+        (None, false)
+    };
+    Ok((ItemSummary { cheated_byte_pos }, cheated))
 }
 
 fn decode_item(
@@ -468,7 +535,7 @@ fn decode_item(
     allow_legacy_106: bool,
 ) -> Result<Option<ItemEvidence>, ScanError> {
     let mut first_pass = Cursor::new(bytes);
-    let (_, cheated) = scan_item(&mut first_pass, version, allow_legacy_106)?;
+    let (summary, cheated) = scan_item(&mut first_pass, version, allow_legacy_106)?;
     if !cheated {
         return Ok(None);
     }
@@ -511,6 +578,7 @@ fn decode_item(
         crafter_id,
         crafter_name,
         custom_keys,
+        cheated_byte_offset: summary.cheated_byte_pos,
     }))
 }
 
@@ -538,9 +606,12 @@ where
         let (summary, cheated) = scan_item(&mut cursor, version, allow_legacy_106)?;
         observe(summary, cheated);
         if cheated {
-            if let Some(item) =
+            if let Some(mut item) =
                 decode_item(&bytes[start..cursor.position], version, allow_legacy_106)?
             {
+                // `decode_item` measured the offset from its own slice (this item only); make it
+                // absolute within `bytes` (the whole container array) by adding the item's start.
+                item.cheated_byte_offset = item.cheated_byte_offset.map(|pos| pos + start);
                 hits.push(item);
             }
         }
@@ -1144,7 +1215,12 @@ fn parse_direct_item_internal(
     let mut cursor = Cursor::new(&bytes[1..]);
     let (summary, cheated) = scan_item(&mut cursor, bytes[0], false)?;
     let item = if cheated {
-        decode_item(&bytes[1..cursor.position + 1], bytes[0], false)?
+        // The version tag at bytes[0] is not part of the slice `decode_item` measured from, so its
+        // offset is relative to `&bytes[1..]`; make it absolute within `bytes` by adding 1 back.
+        decode_item(&bytes[1..cursor.position + 1], bytes[0], false)?.map(|mut item| {
+            item.cheated_byte_offset = item.cheated_byte_offset.map(|pos| pos + 1);
+            item
+        })
     } else {
         None
     };
@@ -1459,6 +1535,47 @@ fn add_item_hits(
     }
 }
 
+/// Records the scrub patch for one cheated item's trailing flags byte (container `items` slot or a
+/// direct `itemData`/`N_itemData` entry): `array_start` is this byte array's offset within the
+/// chunk file, `array` is its already-read bytes, and `hit` is the decoded cheated item. Fails
+/// closed rather than guessing if the parser didn't record where that byte is, or if bit 0 of the
+/// byte the offset points at is not actually set (both would mean the parser and the raw bytes
+/// disagree, which must never be silently patched over).
+fn push_item_cheated_bit_patch(
+    patches: &mut Vec<ScrubPatch>,
+    info: &ZdoInfo<'_>,
+    key_name: &str,
+    array_start: u64,
+    array: &[u8],
+    hit: &ItemEvidence,
+) -> Result<(), ScanError> {
+    let rel = hit
+        .cheated_byte_offset
+        .ok_or_else(|| error("cheated item hit is missing its recorded byte offset"))?;
+    let old_value = *array
+        .get(rel)
+        .ok_or_else(|| error("cheated item byte offset is out of range"))?;
+    if old_value & 1 == 0 {
+        return Err(error(
+            "cheated item byte offset does not point at a set cheated bit",
+        ));
+    }
+    patches.push(ScrubPatch {
+        file_path: String::new(),
+        offset: array_start + rel as u64,
+        kind: ScrubPatchKind::ItemCheatedBit,
+        key_name: key_name.to_string(),
+        owner_prefab_name: info
+            .prefabs
+            .name(info.owner_prefab_hash)
+            .map(str::to_string),
+        position: info.position,
+        old_value: old_value as i64,
+        new_value: (old_value & 0xfe) as i64,
+    });
+    Ok(())
+}
+
 fn read_small_rotation<R: Read>(reader: &mut R) -> Result<(), ScanError> {
     let first = read_u16(reader)?;
     if first & 0x8000 == 0 {
@@ -1475,14 +1592,19 @@ fn read_vec3<R: Read>(reader: &mut R) -> Result<Position, ScanError> {
     })
 }
 
+// One more parameter (`patches`) than clippy's default limit; splitting the reusable scratch
+// buffers, per-ZDO context and scrub sink into a struct would be pure ceremony for a function with
+// exactly one call site's worth of real structure.
+#[allow(clippy::too_many_arguments)]
 fn parse_zdo<R: Read>(
-    reader: &mut R,
+    reader: &mut CountingReader<R>,
     current: bool,
     legacy_count: bool,
     info_without_position: &ZdoInfo<'_>,
     output: &mut ParseOutput,
     scratch: &mut Vec<u8>,
     base64_scratch: &mut Vec<u8>,
+    patches: &mut Vec<ScrubPatch>,
 ) -> Result<(), ScanError> {
     let flags = read_u16(reader)?;
     let (position, legacy_sector) = if current {
@@ -1562,11 +1684,25 @@ fn parse_zdo<R: Read>(
         };
         for _ in 0..count {
             let key = read_i32(reader)?;
+            let value_offset = reader.pos();
             let value = read_i32(reader)?;
             if value == 0 {
                 continue;
             }
             if key == CHEATED {
+                patches.push(ScrubPatch {
+                    file_path: String::new(),
+                    offset: value_offset,
+                    kind: ScrubPatchKind::ZdoIntFlag,
+                    key_name: "cheated".to_string(),
+                    owner_prefab_name: info
+                        .prefabs
+                        .name(info.owner_prefab_hash)
+                        .map(str::to_string),
+                    position: info.position,
+                    old_value: value as i64,
+                    new_value: 0,
+                });
                 push_evidence(
                     output,
                     make_evidence(&info, key, "cheated".to_string(), "zdo_cheated"),
@@ -1578,6 +1714,19 @@ fn parse_zdo<R: Read>(
                 } else {
                     format!("cheatedQueued+{}", key - CHEATED_QUEUED)
                 };
+                patches.push(ScrubPatch {
+                    file_path: String::new(),
+                    offset: value_offset,
+                    kind: ScrubPatchKind::ZdoIntFlag,
+                    key_name: key_name.clone(),
+                    owner_prefab_name: info
+                        .prefabs
+                        .name(info.owner_prefab_hash)
+                        .map(str::to_string),
+                    position: info.position,
+                    old_value: value as i64,
+                    new_value: 0,
+                });
                 push_evidence(
                     output,
                     make_evidence(&info, key, key_name, "station_queued_cheated"),
@@ -1639,11 +1788,22 @@ fn parse_zdo<R: Read>(
                 continue;
             }
             let length = checked_len(read_i32(reader)?, "byte array")?;
+            let array_start = reader.pos();
             scratch.resize(length, 0);
             read_exact(reader, scratch)?;
             if key == ITEMS {
                 let (hits, _decoded) = parse_inventory_internal(scratch, legacy_count, |_, _| {})?;
                 output.counts.decoded_item_count += 1;
+                for hit in &hits {
+                    push_item_cheated_bit_patch(
+                        patches,
+                        &info,
+                        "items",
+                        array_start,
+                        scratch,
+                        hit,
+                    )?;
+                }
                 add_item_hits(
                     output,
                     &info,
@@ -1666,6 +1826,14 @@ fn parse_zdo<R: Read>(
                 };
                 let (item, _summary) = parse_direct_item_internal(scratch)?;
                 if let Some(item) = item {
+                    push_item_cheated_bit_patch(
+                        patches,
+                        &info,
+                        &key_name,
+                        array_start,
+                        scratch,
+                        &item,
+                    )?;
                     add_item_hits(output, &info, key, key_name, kind, vec![item]);
                 }
             }
@@ -1674,6 +1842,7 @@ fn parse_zdo<R: Read>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parse_chunk_reader<R: Read>(
     reader: &mut R,
     entry_bytes: u64,
@@ -1682,7 +1851,10 @@ fn parse_chunk_reader<R: Read>(
     internal_path: &str,
     prefabs: &PrefabNames,
     metadata: &[ChunkMeta],
+    patches: &mut Vec<ScrubPatch>,
 ) -> Result<ParseOutput, ScanError> {
+    let mut reader = CountingReader::new(reader);
+    let reader = &mut reader;
     let version = read_i16(reader)?;
     if version != 41 {
         return Err(error(format!(
@@ -1727,6 +1899,7 @@ fn parse_chunk_reader<R: Read>(
             &mut output,
             &mut scratch,
             &mut base64_scratch,
+            patches,
         )?;
         output.zdo_count += 1;
     }
@@ -1747,6 +1920,11 @@ fn parse_legacy_reader<R: Read>(
     internal_path: &str,
     prefabs: &PrefabNames,
 ) -> Result<ParseOutput, ScanError> {
+    let mut reader = CountingReader::new(reader);
+    let reader = &mut reader;
+    // Legacy v37 worlds are not a scrub target (see `scrub_world_tar_bytes`); patches found here
+    // are always discarded.
+    let mut patches = Vec::new();
     let version = read_i32(reader)?;
     if version != 37 {
         return Err(error(format!(
@@ -1788,6 +1966,7 @@ fn parse_legacy_reader<R: Read>(
             &mut output,
             &mut scratch,
             &mut base64_scratch,
+            &mut patches,
         )?;
         output.zdo_count += 1;
     }
@@ -2347,6 +2526,7 @@ pub fn scan_tar_bytes(
                 internal_path,
                 prefabs,
                 &metadata,
+                &mut Vec::new(),
             )?;
             archive.format = "chunked_v41".to_string();
             merge_parse(&mut archive, output);
@@ -2404,6 +2584,7 @@ pub fn parse_chunk_bytes(
         source_name,
         prefabs,
         &[],
+        &mut Vec::new(),
     )?;
     let mut archive = ArchiveScan {
         archive: source_name.to_string(),
@@ -2504,6 +2685,7 @@ pub fn scan_archive(
                 internal_path,
                 prefabs,
                 &metadata,
+                &mut Vec::new(),
             )?;
             archive.format = "chunked_v41".to_string();
             merge_parse(&mut archive, output);
@@ -4655,6 +4837,7 @@ mod tests {
             "00_00__1_1.chunk",
             &prefabs,
             &[],
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -4705,6 +4888,7 @@ mod tests {
             "00_00__1_1.chunk",
             &prefabs,
             &[],
+            &mut Vec::new(),
         )
         .unwrap();
         assert_eq!(output.zdo_count, 1);
@@ -4748,7 +4932,8 @@ mod tests {
             "a",
             "00_00__1_1.chunk",
             &PrefabNames::default(),
-            &[]
+            &[],
+            &mut Vec::new()
         )
         .is_err());
     }
@@ -4770,7 +4955,8 @@ mod tests {
             "a",
             "00_00__1_1.chunk",
             &PrefabNames::default(),
-            &[]
+            &[],
+            &mut Vec::new()
         )
         .is_err());
         let mut legacy = Vec::new();
