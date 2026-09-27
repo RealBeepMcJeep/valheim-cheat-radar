@@ -49,6 +49,13 @@ export type Archive = {
   metadata_total: number | null;
   metadata_entries: number;
   player_profiles_present: boolean;
+  /** `.fwl2`/`.db2` world metadata. Absent or null when a build without it produced this report. */
+  world_version?: number | null;
+  world_name?: string | null;
+  world_seed?: string | null;
+  world_player_count?: number | null;
+  global_keys?: { key: string; value: number | null }[];
+  world_metadata_error?: string | null;
 };
 
 export type Character = {

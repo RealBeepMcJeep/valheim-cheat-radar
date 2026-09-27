@@ -7,7 +7,7 @@ import type { TreeCluster } from './tree';
 import { biomeColor, densityColor, peakDensity, statusFill } from './map';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import type { Evidence, Report, SortKey } from './types';
+import type { Archive, Evidence, Report, SortKey } from './types';
 import './style.css';
 
 type QueueItem = {
@@ -201,6 +201,7 @@ export function App() {
           <strong>Private by default.</strong>
           <span>Files are parsed in this browser. No backend, analytics, remote fonts, or network requests.</span>
         </div>
+        {report && report.archives.length > 0 && <WorldDetailsPanel archive={report.archives[report.archives.length - 1]} copy={copy} copied={copied} />}
       </header>
 
       <section className="intake panel" aria-labelledby="intake-heading">
@@ -236,7 +237,7 @@ export function App() {
         </nav>
         {tab === 'world' && <WorldView report={report} id="report-world" rows={visibleEvidence} query={query} kind={kind} status={status} sortKey={sortKey} sortDirection={sortDirection} setQuery={setQuery} setKind={setKind} setStatus={setStatus} setSortKey={setSortKey} setSortDirection={setSortDirection} copy={copy} copied={copied} />}
         {tab === 'characters' && <CharacterView report={report} id="report-characters" onSelectCanonical={selectCanonical} />}
-        {tab === 'timeline' && <TimelineView report={report} id="report-timeline" />}
+        {tab === 'timeline' && <TimelineView report={report} id="report-timeline" copy={copy} copied={copied} />}
         <section className="downloads panel" aria-labelledby="download-heading">
           <div><p className="eyebrow">EXPORT</p><h2 id="download-heading">Take the report with you</h2><p>Downloads contain parsed evidence only. Saving is not implemented in this MVP.</p></div>
           <div className="download-actions"><button className="button" type="button" onClick={() => download('json')}>JSON</button><button className="button" type="button" onClick={() => download('csv')}>CSV</button><button className="button" type="button" onClick={() => download('md')}>Markdown</button></div>
@@ -260,6 +261,43 @@ function Summary({ report }: { report: Report }) {
     ['Characters', report.summary.character_count],
   ];
   return <section className="summary" aria-label="Scan summary">{cards.map(([label, value]) => <article className="summary-card" key={label}><span>{label}</span><strong>{value}</strong></article>)}</section>;
+}
+
+/** True when an archive carries any `.fwl2`/`.db2` metadata worth showing (fields are null/absent otherwise). */
+function hasWorldMeta(archive: Archive): boolean {
+  return archive.world_name != null || archive.world_version != null || archive.world_seed != null ||
+    archive.world_player_count != null || (archive.global_keys?.length ?? 0) > 0;
+}
+
+/**
+ * Compact expandable world-metadata summary for the newest snapshot. Seed is shown plainly (with a
+ * copy control, same as a coordinate) rather than hidden behind the toggle; only the individual
+ * progression flags wait for expansion.
+ */
+function WorldDetailsPanel({ archive, copy, copied }: { archive: Archive; copy: (value: string) => void; copied: string }) {
+  if (!hasWorldMeta(archive) && !archive.world_metadata_error) return null;
+  const flags = archive.global_keys ?? [];
+  return <details className="world-details">
+    <summary>
+      <span className="eyebrow">World details</span>
+      <span className="world-fields">
+        {archive.world_name != null && <strong>{archive.world_name}</strong>}
+        {archive.world_version != null && <span>v{archive.world_version}</span>}
+        {archive.world_seed != null && <span className="world-seed">
+          <code>{archive.world_seed}</code>
+          <button className="button" type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); copy(archive.world_seed!); }}>
+            {copied === archive.world_seed ? 'Copied' : 'Copy seed'}
+          </button>
+        </span>}
+        {archive.world_player_count != null && <span>{archive.world_player_count} player{archive.world_player_count === 1 ? '' : 's'}</span>}
+        <span>{flags.length} progression flag{flags.length === 1 ? '' : 's'}</span>
+      </span>
+    </summary>
+    <div className="world-details-body">
+      {flags.length > 0 && <ul className="world-flags">{flags.map((flag) => <li key={flag.key}><code>{flag.key}</code>{flag.value != null && <span>{flag.value}</span>}</li>)}</ul>}
+      {archive.world_metadata_error && <p className="inline-error" role="alert">World metadata: {archive.world_metadata_error}</p>}
+    </div>
+  </details>;
 }
 
 function TabButton({ id, active, children, onClick }: { id: string; active: boolean; children: ComponentChildren; onClick: () => void }) {
@@ -575,6 +613,23 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
 function CharacterView({ report, id, onSelectCanonical }: { report: Report; id: string; onSelectCanonical: (index: number) => void }) {  return <section id={id} className="panel" aria-labelledby="characters-heading"><div className="section-heading"><div><p className="eyebrow">03 / CHARACTERS</p><h2 id="characters-heading">Profile history</h2></div></div><p className="explanation">A single unambiguous trusted, supported profile is selected automatically. When several are plausible, choose one explicitly; backup suffixes are never automatic canonical candidates.</p><div className="table-wrap"><table><thead><tr><th>Status</th><th>Source</th><th>Profile</th><th>Canonical</th><th>Trusted</th><th>Inventory</th><th>Indicators</th></tr></thead><tbody>{report.characters.map((character, index) => { const available = character.trusted && character.supported; const selectable = available && !/\.fch\.(?:old|bak)$/i.test(character.source); return <tr key={`${character.source}-${index}`}><td><span className={`status status-${character.status}`}>{character.status}</span></td><td>{character.source}</td><td>{available ? (character.profile_name || 'Unnamed') : 'Unavailable'}<small>{available ? `v${character.profile_version ?? '—'}` : 'unavailable'}</small></td><td>{character.canonical ? 'yes' : selectable ? <button className="button" type="button" onClick={() => onSelectCanonical(index)}>Choose</button> : 'no'}</td><td>{character.trusted ? 'yes' : 'no'}</td><td>{available ? `${character.inventory_item_count ?? '—'} items / ${character.inventory_version ?? '—'}` : 'unavailable'}</td><td>{available ? (character.used_cheats || character.cheat_stat_nonzero_count || character.cheated_inventory_count || character.bypass_cheat_checks ? 'flagged' : 'none') : 'unavailable'}</td></tr>; })}</tbody></table>{report.characters.length === 0 && <p className="empty">No character profiles were added.</p>}</div></section>;
 }
 
-function TimelineView({ report, id }: { report: Report; id: string }) {
-  return <section id={id} className="panel" aria-labelledby="timeline-heading"><div className="section-heading"><div><p className="eyebrow">04 / TIMELINE</p><h2 id="timeline-heading">Save-to-save context</h2></div></div><p className="explanation">{timelineSummary(report.archives.length)}</p><div className="timeline-list">{report.archives.map((archive, index) => <article key={`${archive.snapshot}-${archive.archive}`}><span>{String(index + 1).padStart(2, '0')}</span><div><h3>{archive.snapshot}</h3><p>{archive.archive} · {archive.format}</p><strong>{archive.zdo_count.toLocaleString()} ZDOs / {(archive.item_count + archive.zdo_cheated_count + archive.station_queued_cheated_count).toLocaleString()} evidence rows</strong></div></article>)}</div><div className="planned"><p className="eyebrow">PLANNED / NOT AVAILABLE</p><h3>Save scrubbing</h3><p>This MVP never edits or rewrites a save. Any future copy-only scrubber would need an explicit preview, checksum verification, and a new download.</p></div></section>;
+function TimelineView({ report, id, copy, copied }: { report: Report; id: string; copy: (value: string) => void; copied: string }) {
+  return <section id={id} className="panel" aria-labelledby="timeline-heading"><div className="section-heading"><div><p className="eyebrow">04 / TIMELINE</p><h2 id="timeline-heading">Save-to-save context</h2></div></div><p className="explanation">{timelineSummary(report.archives.length)}</p><div className="timeline-list">{report.archives.map((archive, index) => <article key={`${archive.snapshot}-${archive.archive}`}><span>{String(index + 1).padStart(2, '0')}</span><div><h3>{archive.snapshot}</h3><p>{archive.archive} · {archive.format}</p><strong>{archive.zdo_count.toLocaleString()} ZDOs / {(archive.item_count + archive.zdo_cheated_count + archive.station_queued_cheated_count).toLocaleString()} evidence rows</strong><TimelineWorldMeta archive={archive} copy={copy} copied={copied} /></div></article>)}</div><div className="planned"><p className="eyebrow">PLANNED / NOT AVAILABLE</p><h3>Save scrubbing</h3><p>This MVP never edits or rewrites a save. Any future copy-only scrubber would need an explicit preview, checksum verification, and a new download.</p></div></section>;
+}
+
+/** Same world-metadata fields as the masthead panel, compact, per archive; no flag list here — 17 archives of them would be noise. */
+function TimelineWorldMeta({ archive, copy, copied }: { archive: Archive; copy: (value: string) => void; copied: string }) {
+  if (!hasWorldMeta(archive) && !archive.world_metadata_error) return null;
+  const flagCount = archive.global_keys?.length ?? 0;
+  return <p className="timeline-world-meta">
+    {archive.world_name != null && <span>{archive.world_name}</span>}
+    {archive.world_version != null && <span>v{archive.world_version}</span>}
+    {archive.world_seed != null && <span className="world-seed">
+      <code>{archive.world_seed}</code>
+      <button className="button" type="button" onClick={() => copy(archive.world_seed!)}>{copied === archive.world_seed ? 'Copied' : 'Copy seed'}</button>
+    </span>}
+    {archive.world_player_count != null && <span>{archive.world_player_count} player{archive.world_player_count === 1 ? '' : 's'}</span>}
+    {flagCount > 0 && <span>{flagCount} progression flag{flagCount === 1 ? '' : 's'}</span>}
+    {archive.world_metadata_error && <span className="inline-error" role="alert">World metadata: {archive.world_metadata_error}</span>}
+  </p>;
 }
