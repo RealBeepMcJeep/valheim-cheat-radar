@@ -485,7 +485,7 @@ function cellPopup(cx: number, cz: number, cellMeters: number, count: number, de
   appendDefinitionRows(body, rows);
   if (detail && detail.top.length) {
     const heading = document.createElement('h4');
-    heading.textContent = 'Biome vote weights';
+    heading.textContent = 'All biome votes (incl. flora hints)';
     body.appendChild(heading);
     const list = document.createElement('ul');
     for (const [index, weight] of detail.top) {
@@ -776,7 +776,7 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
       ))}
     </div>
     <div className="map-legend">
-      {biomeNames.length > 0 && layerView !== 'density' && <p className="map-biomes">{biomeNames.map((name, index) => <span key={name} className="map-key"><i style={{ background: biomeColor(index) }} />{name} ({biomes.filter(([, , cell]) => cell === index).length})</span>)}</p>}
+      {biomeNames.length > 0 && layerView !== 'density' && <p className="map-biomes">{biomeNames.map((name, index) => <span key={name}><i style={{ background: biomeColor(index) }} />{name} ({biomes.filter(([, , cell]) => cell === index).length})</span>)}</p>}
       {biomeNames.length > 0 && <p><strong>Biomes</strong> are inferred from what the save actually contains — creatures, structures and plants the game tags with a biome. A {cellMeters} m cell is only coloured when its objects supply at least three single-biome objects' worth of weighted evidence and a 60% share for one biome; thinner cells stay blank, so undeveloped, ocean and unexplored ground is never guessed. Click any cell (coloured or not) to see the vote counts behind it.</p>}
       {layerView !== 'biome' && cells.length > 0 && <div className="map-density-scale" aria-hidden="true">
         <div className="map-density-gradient" style={{ background: densityGradientCss() }} />
