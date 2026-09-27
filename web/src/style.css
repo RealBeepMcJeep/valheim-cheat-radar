@@ -159,10 +159,34 @@ details summary { color: var(--blue); cursor: pointer; }
 .map-keys { align-items: center; display: flex; flex-wrap: wrap; gap: .9rem; }
 .map-key { border: 2px solid #0d0d0c; border-radius: 50%; display: inline-block; height: .7rem; margin-right: .3rem; width: .7rem; }
 .map-key-cluster { background: #d36a32; border-color: #ee8a48; }
+.map-key-badge { background: #5d9ac4; border-color: #0d0d0c; border-radius: .15rem; }
 .map-key-new { background: #ee8a48; }
 .map-key-persisted { background: #8fbf7e; }
 .map-key-removed { background: #b84a37; }
 .map-hint { font: .72rem ui-monospace, monospace; }
+
+/* Density gradient legend: a CSS swatch matching `densityGradientCss()` exactly, with log-scaled
+ * tick counts underneath (see `densityTickCounts` in map.ts). */
+.map-density-scale { display: grid; gap: .2rem; max-width: 24rem; }
+.map-density-gradient { border: 1px solid var(--line); height: .6rem; width: 100%; }
+.map-density-ticks { display: flex; font: .68rem ui-monospace, monospace; justify-content: space-between; }
+
+/* Permanent Leaflet tooltips used as plain-text labels (see `addPixelLabel`/badge markers in
+ * App.tsx) — stripped of the default tooltip chrome so they read as map labels, not callouts. */
+.leaflet-tooltip.map-badge-tooltip, .leaflet-tooltip.map-grid-label {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: var(--bone);
+  font: 700 .68rem ui-monospace, monospace;
+  padding: 0;
+}
+.leaflet-tooltip.map-badge-tooltip::before, .leaflet-tooltip.map-grid-label::before { display: none; }
+.leaflet-tooltip.map-grid-label { color: rgba(242, 239, 230, .55); font-weight: 400; }
+.leaflet-tooltip.map-grid-origin { color: var(--bone); font-weight: 700; }
+
+/* Native Leaflet scale control (see `L.control.scale` in MapView), recoloured for the dark map. */
+.leaflet-control-scale-line { background: rgba(11, 12, 12, .55); border-color: var(--bone); color: var(--bone); }
 
 .timeline-list { border-left: 1px solid var(--ember); display: grid; gap: 1rem; margin: 1.5rem 0 2rem 1rem; padding-left: 1.5rem; }
 .timeline-list article { align-items: flex-start; display: flex; gap: 1rem; position: relative; }

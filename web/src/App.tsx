@@ -4,7 +4,20 @@ import { FailedFile, FinalReport, ScanCancelledError, ScannerWorkerClient, forma
 import { filterEvidence, sortEvidence, timelineSummary } from './view';
 import { CLUSTER_RADIUS_OPTIONS, DEFAULT_CLUSTER_RADIUS, clusterEvidence, clusterSummaryLabel, evidenceLabel } from './tree';
 import type { TreeCluster } from './tree';
-import { biomeColor, densityColor, peakDensity, statusFill } from './map';
+import {
+  biomeColor,
+  biomeSourceText,
+  biomeVerdictText,
+  bucketByPixel,
+  densityColor,
+  densityGradientCss,
+  densityTickCounts,
+  indexBiomeDetail,
+  mostSevereStatus,
+  peakDensity,
+  statusFill,
+} from './map';
+import type { CellBiomeDetail } from './map';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { Evidence, Report, SortKey } from './types';
@@ -394,10 +407,96 @@ function clusterPopup(cluster: TreeCluster): HTMLElement {
   return root;
 }
 
+function pixelBadgePopup(items: Evidence[]): HTMLElement {
+  const { root, body } = popupShell('Dense stack', coordinateText(items[0].position));
+  const summary = document.createElement('p');
+  summary.className = 'map-popup-summary';
+  summary.textContent = `${items.length} records rendered on top of each other at this zoom. Zoom in to split them apart, or see them all here.`;
+  body.appendChild(summary);
+  const sorted = [...items].sort((a, b) => a.status.localeCompare(b.status) || evidenceLabel(a).localeCompare(evidenceLabel(b)));
+  const list = document.createElement('ul');
+  for (const row of sorted.slice(0, 30)) {
+    const item = document.createElement('li');
+    item.textContent = `${evidenceLabel(row)} — ${coordinateText(row.position)} (${row.status})`;
+    list.appendChild(item);
+  }
+  if (sorted.length > 30) {
+    const more = document.createElement('li');
+    more.textContent = `…and ${sorted.length - 30} more`;
+    list.appendChild(more);
+  }
+  body.appendChild(list);
+  return root;
+}
+
+/** Cell popup for feature 1: what backs a cell's biome fill, or the lack of one. */
+function cellPopup(cx: number, cz: number, cellMeters: number, count: number, detail: CellBiomeDetail | undefined, biomeNames: string[]): HTMLElement {
+  const originX = cx * cellMeters;
+  const originZ = cz * cellMeters;
+  const { root, body } = popupShell('Map cell', `${originX}, ${originZ} to ${originX + cellMeters}, ${originZ + cellMeters}`);
+  const rows: [string, string][] = [
+    ['ZDO count', count.toLocaleString()],
+    ['Biome verdict', biomeVerdictText(detail, biomeNames)],
+  ];
+  const source = biomeSourceText(detail);
+  if (source) rows.push(['Verdict source', source]);
+  appendDefinitionRows(body, rows);
+  if (detail && detail.top.length) {
+    const heading = document.createElement('h4');
+    heading.textContent = 'Biome vote weights';
+    body.appendChild(heading);
+    const list = document.createElement('ul');
+    for (const [index, weight] of detail.top) {
+      const item = document.createElement('li');
+      item.textContent = `${biomeNames[index] ?? `biome ${index}`}: ${weight}`;
+      list.appendChild(item);
+    }
+    body.appendChild(list);
+  }
+  return root;
+}
+
+function addPixelLabel(target: L.LayerGroup, latlng: L.LatLngExpression, text: string, className: string): void {
+  const label = document.createElement('span');
+  label.textContent = text;
+  const anchor = L.circleMarker(latlng, { radius: 0, opacity: 0, fillOpacity: 0, interactive: false });
+  anchor.bindTooltip(label, { permanent: true, direction: 'right', className, interactive: false, offset: [3, 0] });
+  anchor.addTo(target);
+}
+
+const GRID_STEP_METERS = 1000;
+
+/** Metre grid every `GRID_STEP_METERS`, labelled, with the origin marked — lets a hotspot's
+ *  coordinates be matched against the in-game map. */
+function buildGridLayer(minXMeters: number, maxXMeters: number, minZMeters: number, maxZMeters: number): L.LayerGroup {
+  const group = L.layerGroup();
+  const lineStyle = { color: '#f2efe6', weight: 1, opacity: 0.16, interactive: false, dashArray: '3 7' } as const;
+  const startX = Math.ceil(minXMeters / GRID_STEP_METERS) * GRID_STEP_METERS;
+  for (let x = startX; x <= maxXMeters; x += GRID_STEP_METERS) {
+    L.polyline([[minZMeters, x], [maxZMeters, x]], lineStyle).addTo(group);
+    addPixelLabel(group, [maxZMeters, x], `x ${x.toLocaleString()} m`, 'map-grid-label');
+  }
+  const startZ = Math.ceil(minZMeters / GRID_STEP_METERS) * GRID_STEP_METERS;
+  for (let z = startZ; z <= maxZMeters; z += GRID_STEP_METERS) {
+    L.polyline([[z, minXMeters], [z, maxXMeters]], lineStyle).addTo(group);
+    addPixelLabel(group, [z, minXMeters], `z ${z.toLocaleString()} m`, 'map-grid-label');
+  }
+  if (minXMeters <= 0 && 0 <= maxXMeters && minZMeters <= 0 && 0 <= maxZMeters) {
+    L.circleMarker([0, 0], { radius: 4, color: '#f2efe6', weight: 2, fillOpacity: 0, interactive: false }).addTo(group);
+    addPixelLabel(group, [0, 0], '0, 0', 'map-grid-label map-grid-origin');
+  }
+  return group;
+}
+
 const MAP_CELL_FALLBACK = 64;
 const MAP_MIN_ZOOM = -4;
 const MAP_MAX_ZOOM = 4;
 const MAP_CLUSTER_RADIUS: [number, number] = [9, 24];
+/** Screen-pixel grid used to declutter a dense base: markers within `MAP_BUCKET_PX` at the current
+ *  zoom collapse into one badge. Pixel space (not world metres), because a base looks dense or sparse
+ *  relative to the screen, not to a fixed metre radius that would over-merge when zoomed out. */
+const MAP_BUCKET_PX = 42;
+const MAP_BADGE_RADIUS: [number, number] = [10, 24];
 
 /**
  * Leaflet on `CRS.Simple` — a flat world coordinate space, which is exactly what
@@ -407,13 +506,21 @@ const MAP_CLUSTER_RADIUS: [number, number] = [9, 24];
 function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[]; clusters: TreeCluster[] }) {
   const host = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
-  const layers = useRef<{ density: L.ImageOverlay | null; biome: L.ImageOverlay | null; points: L.LayerGroup | null; groups: L.LayerGroup | null }>({ density: null, biome: null, points: null, groups: null });
+  const layers = useRef<{ density: L.ImageOverlay | null; biome: L.ImageOverlay | null; grid: L.LayerGroup | null; points: L.LayerGroup | null; groups: L.LayerGroup | null }>({ density: null, biome: null, grid: null, points: null, groups: null });
   const fitted = useRef(false);
 
   const cells = useMemo(() => report.map?.cells ?? [], [report]);
   const biomes = useMemo(() => report.map?.biomes ?? [], [report]);
-  const biomeNames = report.map?.biome_names ?? [];
+  const biomeNames = useMemo(() => report.map?.biome_names ?? [], [report]);
+  const biomeDetailIndex = useMemo(() => indexBiomeDetail(report.map?.biome_detail), [report]);
+  const cellCountIndex = useMemo(() => {
+    const index = new Map<string, number>();
+    for (const [x, z, count] of cells) index.set(`${x},${z}`, count);
+    return index;
+  }, [cells]);
+  const peak = useMemo(() => peakDensity(cells), [cells]);
   const [layerView, setLayerView] = useState<'biome' | 'density' | 'both'>('both');
+  const [zoom, setZoom] = useState(0);
   const cellMeters = report.map?.cell_meters || MAP_CELL_FALLBACK;
 
   useEffect(() => {
@@ -431,11 +538,16 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
       zoomAnimation: false,
       attributionControl: false,
     });
+    // Native Leaflet scale bar. Our CRS.Simple lat/lng *are* world metres (see the bounds math
+    // below), so the control's built-in Euclidean distance() already comes out in real metres —
+    // no custom scale code needed.
+    L.control.scale({ metric: true, imperial: false, maxWidth: 120 }).addTo(instance);
+    instance.on('zoomend', () => setZoom(instance.getZoom()));
     map.current = instance;
     return () => {
       instance.remove();
       map.current = null;
-      layers.current = { density: null, biome: null, points: null, groups: null };
+      layers.current = { density: null, biome: null, grid: null, points: null, groups: null };
       fitted.current = false;
     };
   }, []);
@@ -445,8 +557,10 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
     if (!instance) return;
     layers.current.density?.remove();
     layers.current.biome?.remove();
+    layers.current.grid?.remove();
     layers.current.density = null;
     layers.current.biome = null;
+    layers.current.grid = null;
     if (!cells.length) return;
 
     let minX = Infinity;
@@ -464,16 +578,16 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
     canvas.height = maxZ - minZ + 1;
     const context = canvas.getContext('2d');
     if (!context) return;
-    const peak = peakDensity(cells);
     for (const [cx, cz, count] of cells) {
       context.fillStyle = densityColor(count, peak);
       // Row 0 holds the largest Z so the image is not mirrored vertically.
       context.fillRect(cx - minX, maxZ - cz, 1, 1);
     }
-    const bounds: L.LatLngBoundsLiteral = [
-      [(maxZ + 1) * cellMeters, minX * cellMeters],
-      [minZ * cellMeters, (maxX + 1) * cellMeters],
-    ];
+    const minXMeters = minX * cellMeters;
+    const maxXMeters = (maxX + 1) * cellMeters;
+    const minZMeters = minZ * cellMeters;
+    const maxZMeters = (maxZ + 1) * cellMeters;
+    const bounds: L.LatLngBoundsLiteral = [[maxZMeters, minXMeters], [minZMeters, maxXMeters]];
     // Biome layer under the density shading: one pixel per cell that holds enough evidence for a
     // verdict, so undeveloped, ocean and unexplored ground stays blank instead of being guessed.
     if (biomes.length) {
@@ -498,11 +612,15 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
       opacity: 0.4,
       interactive: false,
     }).addTo(instance);
+    // Metre grid + origin marker, independent of layer view, so a hotspot's coordinates can be
+    // matched against the in-game map regardless of which fill is showing.
+    layers.current.grid = buildGridLayer(minXMeters, maxXMeters, minZMeters, maxZMeters).addTo(instance);
     if (!fitted.current) {
       instance.fitBounds(bounds, { padding: [18, 18] });
       fitted.current = true;
+      setZoom(instance.getZoom());
     }
-  }, [cells, biomes, cellMeters]);
+  }, [cells, biomes, cellMeters, peak]);
 
   // Switching layers only changes opacity, so it never rebuilds either canvas. "Both" keeps the
   // density as a highlight (0.4) so the biome colours underneath stay legible.
@@ -511,27 +629,79 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
     layers.current.density?.setOpacity(layerView === 'biome' ? 0 : layerView === 'both' ? 0.4 : 0.9);
   }, [layerView, biomes, cells]);
 
+  // A cell click (blank canvas, not a marker — markers set `bubblingMouseEvents: false` so they
+  // never reach this) shows the ZDO count and biome verdict — or the reason there is none — for
+  // whichever cell was clicked, populated or not.
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance) return;
+    const handleClick = (event: L.LeafletMouseEvent) => {
+      const cx = Math.floor(event.latlng.lng / cellMeters);
+      const cz = Math.floor(event.latlng.lat / cellMeters);
+      const key = `${cx},${cz}`;
+      const count = cellCountIndex.get(key) ?? 0;
+      const detail = biomeDetailIndex.get(key);
+      L.popup().setLatLng(event.latlng).setContent(cellPopup(cx, cz, cellMeters, count, detail, biomeNames)).openOn(instance);
+    };
+    instance.on('click', handleClick);
+    return () => instance.off('click', handleClick);
+  }, [cellCountIndex, biomeDetailIndex, biomeNames, cellMeters]);
+
+  // Evidence markers decluttered by screen-pixel proximity at the current zoom: a dense base
+  // collapses into one count badge (severity-coloured, click for the full list) instead of dozens of
+  // stacked rings, and splits back into individual markers once they are far enough apart on screen.
   useEffect(() => {
     const instance = map.current;
     if (!instance) return;
     layers.current.points?.remove();
-    layers.current.groups?.remove();
 
     const points = L.layerGroup();
-    for (const row of rows) {
-      L.circleMarker([row.position.z, row.position.x], {
-        radius: 3.5,
+    const projected = rows
+      .filter((row) => Number.isFinite(row.position.x) && Number.isFinite(row.position.z))
+      .map((row) => {
+        const point = instance.project([row.position.z, row.position.x], zoom);
+        return { x: point.x, y: point.y, item: row };
+      });
+    const buckets = bucketByPixel(projected, MAP_BUCKET_PX);
+    const biggestBucket = buckets.reduce((max, bucket) => Math.max(max, bucket.items.length), 1);
+    for (const bucket of buckets) {
+      const latlng = instance.unproject([bucket.x, bucket.y], zoom);
+      if (bucket.items.length === 1) {
+        const row = bucket.items[0];
+        L.circleMarker(latlng, {
+          radius: 3.5,
+          color: '#0d0d0c',
+          weight: 1,
+          fillColor: statusFill(row.status),
+          fillOpacity: 1,
+          bubblingMouseEvents: false,
+        })
+          .bindPopup(() => evidencePopup(row))
+          .addTo(points);
+        continue;
+      }
+      const weight = Math.sqrt(bucket.items.length / biggestBucket);
+      const badge = L.circleMarker(latlng, {
+        radius: MAP_BADGE_RADIUS[0] + weight * (MAP_BADGE_RADIUS[1] - MAP_BADGE_RADIUS[0]),
         color: '#0d0d0c',
-        weight: 1,
-        fillColor: statusFill(row.status),
-        fillOpacity: 1,
-      })
-        .bindPopup(() => evidencePopup(row))
-        .addTo(points);
+        weight: 1.5,
+        fillColor: statusFill(mostSevereStatus(bucket.items.map((row) => row.status))),
+        fillOpacity: 0.85,
+        bubblingMouseEvents: false,
+      }).bindPopup(() => pixelBadgePopup(bucket.items));
+      const label = document.createElement('span');
+      label.textContent = String(bucket.items.length);
+      badge.bindTooltip(label, { permanent: true, direction: 'center', className: 'map-badge-tooltip', interactive: false });
+      badge.addTo(points);
     }
     points.addTo(instance);
     layers.current.points = points;
+  }, [rows, zoom]);
 
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance) return;
+    layers.current.groups?.remove();
     const groups = L.layerGroup();
     const biggest = clusters.reduce((max, cluster) => Math.max(max, cluster.count), 1);
     for (const cluster of clusters) {
@@ -543,13 +713,14 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
         weight: 2,
         fillColor: '#d36a32',
         fillOpacity: 0.3,
+        bubblingMouseEvents: false,
       })
         .bindPopup(() => clusterPopup(cluster))
         .addTo(groups);
     }
     groups.addTo(instance);
     layers.current.groups = groups;
-  }, [rows, clusters]);
+  }, [clusters]);
 
   if (!report.map || !cells.length) {
     return <p className="empty">This report has no world map data. Rescan a world archive to include it.</p>;
@@ -564,10 +735,14 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
     </div>
     <div className="map-legend">
       {biomeNames.length > 0 && layerView !== 'density' && <p className="map-biomes">{biomeNames.map((name, index) => <span key={name} className="map-key"><i style={{ background: biomeColor(index) }} />{name} ({biomes.filter(([, , cell]) => cell === index).length})</span>)}</p>}
-      {biomeNames.length > 0 && <p><strong>Biomes</strong> are inferred from what the save actually contains — creatures, structures and plants the game tags with a biome. A {cellMeters} m cell is only coloured when its objects supply at least three single-biome objects' worth of weighted evidence and a 60% share for one biome; thinner cells stay blank, so undeveloped, ocean and unexplored ground is never guessed.</p>}
-      <p><strong>Density</strong> is the ZDO count per {cellMeters} m cell in the newest save, so it shows where the world actually has content. Terrain is not stored in a save, so this is a content map, not satellite imagery.</p>
-      <p className="map-keys"><span className="map-key map-key-cluster" />cluster (click for contents) <span className="map-key map-key-new" />new <span className="map-key map-key-persisted" />persisted <span className="map-key map-key-removed" />removed / cleared</p>
-      <p className="map-hint">Drag to pan · scroll or pinch to zoom · click any marker to see what is inside.</p>
+      {biomeNames.length > 0 && <p><strong>Biomes</strong> are inferred from what the save actually contains — creatures, structures and plants the game tags with a biome. A {cellMeters} m cell is only coloured when its objects supply at least three single-biome objects' worth of weighted evidence and a 60% share for one biome; thinner cells stay blank, so undeveloped, ocean and unexplored ground is never guessed. Click any cell (coloured or not) to see the vote counts behind it.</p>}
+      {layerView !== 'biome' && cells.length > 0 && <div className="map-density-scale" aria-hidden="true">
+        <div className="map-density-gradient" style={{ background: densityGradientCss() }} />
+        <div className="map-density-ticks">{densityTickCounts(peak).map((count, index) => <span key={index}>{count.toLocaleString()}</span>)}</div>
+      </div>}
+      <p><strong>Density</strong> is the ZDO count per {cellMeters} m cell in the newest save, log-scaled from indigo (sparse) to red (the densest cell, {peak.toLocaleString()} ZDOs), so it shows where the world actually has content. Terrain is not stored in a save, so this is a content map, not satellite imagery.</p>
+      <p className="map-keys"><span className="map-key map-key-cluster" />cluster (click for contents) <span className="map-key map-key-badge" />N = dense stack, click to list <span className="map-key map-key-new" />new <span className="map-key map-key-persisted" />persisted <span className="map-key map-key-removed" />removed / cleared</p>
+      <p className="map-hint">Drag to pan · scroll or pinch to zoom · click any marker, badge, or cell to see what is there · dashed lines are a {GRID_STEP_METERS} m metre grid.</p>
     </div>
   </div>;
 }
