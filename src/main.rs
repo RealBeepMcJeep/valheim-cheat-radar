@@ -7,13 +7,15 @@ use std::time::Instant;
 
 #[cfg(not(target_arch = "wasm32"))]
 use valheim_backup_cheat_scanner::{
-    scan_archives, scan_character_timeline, validate_character_oracle, validate_oracle,
-    validate_oracle_fixture_file, write_reports_with_characters,
+    scan_archives, scan_character_timeline, scrub_world_archive, validate_character_oracle,
+    validate_oracle, validate_oracle_fixture_file, write_reports_with_characters, PrefabNames,
+    ScrubPatchKind,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
 fn usage() -> ! {
     eprintln!("usage: valheim-backup-cheat-scanner [--archive-dir DIR] [--output-dir DIR] [--prefab-names FILE] [--prefab-biomes FILE] [--zstd PROGRAM] [--character FILE] [--character-history-dir DIR] [--oracle FILE] [--validate]");
+    eprintln!("       valheim-backup-cheat-scanner --scrub-world ARCHIVE.tar.zst --scrub-out DIR [--prefab-names FILE] [--zstd PROGRAM]");
     std::process::exit(2);
 }
 
@@ -41,6 +43,8 @@ fn main() {
     let mut character_history_dir: Option<PathBuf> = None;
     let mut oracle: Option<PathBuf> = None;
     let mut validate = false;
+    let mut scrub_world: Option<PathBuf> = None;
+    let mut scrub_out: Option<PathBuf> = None;
     let args: Vec<String> = env::args().skip(1).collect();
     let mut index = 0;
     while index < args.len() {
@@ -91,6 +95,14 @@ fn main() {
                 oracle = args.get(index).map(PathBuf::from).or_else(|| usage());
             }
             "--validate" => validate = true,
+            "--scrub-world" => {
+                index += 1;
+                scrub_world = args.get(index).map(PathBuf::from).or_else(|| usage());
+            }
+            "--scrub-out" => {
+                index += 1;
+                scrub_out = args.get(index).map(PathBuf::from).or_else(|| usage());
+            }
             "--help" | "-h" => usage(),
             _ => usage(),
         }
@@ -98,6 +110,45 @@ fn main() {
     }
 
     let started = Instant::now();
+    match (&scrub_world, &scrub_out) {
+        (Some(archive), Some(out_dir)) => {
+            let prefabs = match PrefabNames::load(&prefab_names) {
+                Ok(prefabs) => prefabs,
+                Err(error) => {
+                    eprintln!("scrub failed: {error}");
+                    std::process::exit(1);
+                }
+            };
+            let outcome = match scrub_world_archive(archive, out_dir, &zstd, &prefabs) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    eprintln!("scrub failed: {error}");
+                    std::process::exit(1);
+                }
+            };
+            let int_flags = outcome
+                .patches
+                .iter()
+                .filter(|patch| patch.kind == ScrubPatchKind::ZdoIntFlag)
+                .count();
+            let item_bits = outcome.patches.len() - int_flags;
+            println!(
+                "scrubbed {} ZDOs across {} in {:.3}s: {} ZDO int-flag patch(es), {} item cheated-bit patch(es); output written to {}",
+                outcome.zdo_count,
+                archive.display(),
+                started.elapsed().as_secs_f64(),
+                int_flags,
+                item_bits,
+                out_dir.display()
+            );
+            return;
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            eprintln!("--scrub-world and --scrub-out must be given together");
+            usage();
+        }
+        (None, None) => {}
+    }
     // The default biome table is optional; an explicitly requested one must exist.
     let biome_path = if prefab_biomes_given || prefab_biomes.is_file() {
         Some(prefab_biomes.as_path())

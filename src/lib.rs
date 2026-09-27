@@ -370,9 +370,20 @@ pub enum ScrubPatchKind {
     ItemCheatedBit,
 }
 
+impl ScrubPatchKind {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn as_str(self) -> &'static str {
+        match self {
+            ScrubPatchKind::ZdoIntFlag => "zdo_int_flag",
+            ScrubPatchKind::ItemCheatedBit => "item_cheated_bit",
+        }
+    }
+}
+
 /// A single recorded patch location, found while parsing a v41 chunk file. `offset` is absolute
-/// within `file_path`. Old/new values are filled in when the patch is applied, read directly from
-/// the buffer at `offset` rather than trusted from the parse, so a mismatch fails closed instead of
+/// within `file_path`. `old_value`/`new_value` are recorded from the parser's own read of the
+/// bytes at the moment it found the flag, and `apply_patch` re-reads the buffer at `offset` and
+/// refuses to write unless it still matches `old_value`, so a mismatch fails closed instead of
 /// silently patching the wrong byte.
 #[derive(Debug, Clone)]
 pub struct ScrubPatch {
@@ -2820,6 +2831,168 @@ fn verify_scrub(
     Ok(())
 }
 
+/// Deterministic, privacy-safe (no absolute paths, no player ids) JSON audit of every patch a
+/// scrub applied.
+#[cfg(not(target_arch = "wasm32"))]
+fn scrub_audit_json(outcome: &ScrubOutcome) -> String {
+    let mut json = String::new();
+    json.push_str("{\"zdo_count\":");
+    json.push_str(&outcome.zdo_count.to_string());
+    json.push_str(",\"patch_count\":");
+    json.push_str(&outcome.patches.len().to_string());
+    json.push_str(",\"patches\":[");
+    for (index, patch) in outcome.patches.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!(
+            "{{\"file\":{},\"offset\":{},\"kind\":{},\"key\":{},\"prefab\":{},\"position\":{},\"old_value\":{},\"new_value\":{}}}",
+            json_string(&patch.file_path),
+            patch.offset,
+            json_string(patch.kind.as_str()),
+            json_string(&patch.key_name),
+            json_opt_string(patch.owner_prefab_name.as_deref()),
+            json_position(patch.position),
+            patch.old_value,
+            patch.new_value,
+        ));
+    }
+    json.push_str("]}");
+    json
+}
+
+/// Same audit as `scrub_audit_json`, as a Markdown table for a human to read.
+#[cfg(not(target_arch = "wasm32"))]
+fn scrub_audit_markdown(outcome: &ScrubOutcome) -> String {
+    fn cell(value: &str) -> String {
+        value.replace('|', "\\|").replace('\n', " ")
+    }
+    let mut md = String::new();
+    md.push_str("# Scrub audit\n\n");
+    md.push_str(&format!(
+        "ZDO count: {}\n\nPatches applied: {}\n\n",
+        outcome.zdo_count,
+        outcome.patches.len()
+    ));
+    md.push_str("| file | offset | kind | key | prefab | position | old -> new |\n");
+    md.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
+    for patch in &outcome.patches {
+        md.push_str(&format!(
+            "| {} | {} | {} | {} | {} | ({:.1}, {:.1}, {:.1}) | {} -> {} |\n",
+            cell(&patch.file_path),
+            patch.offset,
+            patch.kind.as_str(),
+            cell(&patch.key_name),
+            patch
+                .owner_prefab_name
+                .as_deref()
+                .map(cell)
+                .unwrap_or_else(|| "-".to_string()),
+            patch.position.x,
+            patch.position.y,
+            patch.position.z,
+            patch.old_value,
+            patch.new_value,
+        ));
+    }
+    md
+}
+
+/// Writes a scrubbed world (and its audit report) to `output_dir`, refusing to touch the input
+/// archive or an already-populated/overlapping output directory, and refuses to leave a partial
+/// or unverified copy behind: on any failure after the first byte is written, everything written
+/// so far is removed and the error is returned.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn scrub_world_archive(
+    archive_path: &Path,
+    output_dir: &Path,
+    zstd_program: &str,
+    prefabs: &PrefabNames,
+) -> Result<ScrubOutcome, ScanError> {
+    let archive_dir = archive_path.parent().unwrap_or(Path::new("."));
+    let archive_dir_abs = std::path::absolute(archive_dir).map_err(ScanError::from)?;
+    let output_abs = std::path::absolute(output_dir).map_err(ScanError::from)?;
+    if output_abs.starts_with(&archive_dir_abs) {
+        return Err(error(
+            "--scrub-out must not be the archive's directory or inside it",
+        ));
+    }
+    if output_dir.is_file() {
+        return Err(error(format!(
+            "{} already exists as a file",
+            output_dir.display()
+        )));
+    }
+    if output_dir.is_dir() {
+        let has_entries = std::fs::read_dir(output_dir)
+            .map_err(|e| error(format!("cannot read {}: {e}", output_dir.display())))?
+            .next()
+            .is_some();
+        if has_entries {
+            return Err(error(format!(
+                "{} already exists and is not empty",
+                output_dir.display()
+            )));
+        }
+    }
+
+    let bytes = decompress_zstd_to_vec(archive_path, zstd_program)?;
+    let outcome = scrub_world_tar_bytes(&bytes, prefabs)?;
+
+    if let Err(write_error) = write_scrub_output(output_dir, &outcome) {
+        let _ = std::fs::remove_dir_all(output_dir);
+        return Err(write_error);
+    }
+    if let Err(verify_error) = verify_scrub_output_on_disk(output_dir, &outcome) {
+        let _ = std::fs::remove_dir_all(output_dir);
+        return Err(verify_error);
+    }
+    Ok(outcome)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_scrub_output(output_dir: &Path, outcome: &ScrubOutcome) -> Result<(), ScanError> {
+    for file in &outcome.files {
+        let target = output_dir.join(&file.path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| error(format!("cannot create {}: {e}", parent.display())))?;
+        }
+        std::fs::write(&target, &file.bytes)
+            .map_err(|e| error(format!("cannot write {}: {e}", target.display())))?;
+    }
+    std::fs::write(
+        output_dir.join("SCRUB_AUDIT.md"),
+        scrub_audit_markdown(outcome),
+    )
+    .map_err(|e| error(format!("cannot write scrub audit markdown: {e}")))?;
+    std::fs::write(
+        output_dir.join("scrub-audit.json"),
+        scrub_audit_json(outcome),
+    )
+    .map_err(|e| error(format!("cannot write scrub audit json: {e}")))?;
+    Ok(())
+}
+
+/// Reads every written file back and checks it against what was meant to be written: cheap
+/// insurance against a filesystem-level surprise (partial write, wrong encoding, etc.) that the
+/// in-memory verification in `scrub_world_tar_bytes` cannot see.
+#[cfg(not(target_arch = "wasm32"))]
+fn verify_scrub_output_on_disk(output_dir: &Path, outcome: &ScrubOutcome) -> Result<(), ScanError> {
+    for file in &outcome.files {
+        let target = output_dir.join(&file.path);
+        let on_disk = std::fs::read(&target)
+            .map_err(|e| error(format!("cannot read back {}: {e}", target.display())))?;
+        if on_disk != file.bytes {
+            return Err(error(format!(
+                "{} on disk does not match what was written",
+                target.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn parse_chunk_bytes(
     bytes: &[u8],
     source_name: &str,
@@ -2875,6 +3048,35 @@ pub fn parse_legacy_bytes(
     };
     merge_parse(&mut archive, output);
     Ok(archive)
+}
+
+/// Decompresses a whole `.tar.zst` archive into memory. `scan_archive` above streams instead (a
+/// scan never needs to hold the tar in memory at once), but the scrub CLI needs the full bytes: it
+/// both writes them back out and re-parses the scrubbed copy for verification.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn decompress_zstd_to_vec(path: &Path, zstd_program: &str) -> Result<Vec<u8>, ScanError> {
+    let mut child = Command::new(zstd_program)
+        .args(["-dc"])
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| error(format!("cannot start {zstd_program}: {e}")))?;
+    let mut bytes = Vec::new();
+    child
+        .stdout
+        .take()
+        .ok_or_else(|| error("zstd has no stdout"))?
+        .read_to_end(&mut bytes)
+        .map_err(ScanError::from)?;
+    let status = child.wait().map_err(ScanError::from)?;
+    if !status.success() {
+        return Err(error(format!(
+            "{zstd_program} failed decompressing {}",
+            path.display()
+        )));
+    }
+    Ok(bytes)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
