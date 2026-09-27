@@ -19,11 +19,12 @@ export const SCRUB_MODES: { mode: ScrubMode; label: string; detail: string }[] =
 /** One row of the scanner's scrub audit (`scrub_audit_json` in src/lib.rs). */
 export type ScrubAuditAction = {
   action: 'clear_flag' | 'delete_item' | 'remove_from_container' | 'empty_stand' | 'destroy';
+  file: string;
   prefab: string | null;
   item: string | null;
   contents: number;
 };
-export type ScrubAudit = { mode: ScrubMode; zdo_count_before: number; zdo_count_after: number; actions: ScrubAuditAction[] };
+export type ScrubAudit = { mode: ScrubMode; zdo_count_before: number; zdo_count_after: number; auto_backups?: string[]; actions: ScrubAuditAction[] };
 export type ScrubSummaryLine = { label: string; count: number; examples: string };
 
 /** "stone_wall_4x2 ×117, wood_floor ×72, +12 more" */
@@ -35,9 +36,13 @@ function examples(names: (string | null)[], limit = 4): string {
   return sorted.length > limit ? `${shown.join(', ')}, +${sorted.length - limit} more` : shown.join(', ');
 }
 
-/** What a prepared scrub did, grouped for a human, plus the consequences worth a warning. */
+/**
+ * What a prepared scrub did to the live world, grouped for a human, plus the consequences worth a
+ * warning. The server's own automatic backups get the same changes and are summarized as one line.
+ */
 export function summarizeScrub(audit: ScrubAudit): { lines: ScrubSummaryLine[]; warnings: string[] } {
-  const of = (action: ScrubAuditAction['action']) => audit.actions.filter((row) => row.action === action);
+  const live = audit.actions.filter((row) => !row.file.includes('_backup_auto-'));
+  const of = (action: ScrubAuditAction['action']) => live.filter((row) => row.action === action);
   const lines: ScrubSummaryLine[] = [];
   const add = (label: string, rows: ScrubAuditAction[], name: (row: ScrubAuditAction) => string | null) => {
     if (rows.length) lines.push({ label, count: rows.length, examples: examples(rows.map(name)) });
@@ -49,6 +54,10 @@ export function summarizeScrub(audit: ScrubAudit): { lines: ScrubSummaryLine[]; 
   const destroyed = of('destroy');
   for (const category of CATEGORY_ORDER) {
     add(`Destroyed: ${CATEGORY_LABELS[category].toLowerCase()}`, destroyed.filter((row) => classifyPrefab(row.prefab ?? '') === category), (row) => row.prefab);
+  }
+  const backups = audit.auto_backups ?? [];
+  if (backups.length) {
+    lines.push({ label: "Server's automatic backups changed the same way", count: backups.length, examples: backups.join(', ') });
   }
 
   const warnings: string[] = [];

@@ -2339,6 +2339,9 @@ pub struct ArchiveScan {
     /// `.fwl2`/`.db2` world metadata. Player ids and character names are never recorded here.
     pub world: WorldMeta,
     pub world_metadata_error: Option<String>,
+    /// Folders of the dedicated server's own rotating world backups found in the archive
+    /// (`<world>_backup_auto-yyyyMMdd-HHmmss`). Older full copies of the world, not scanned.
+    pub auto_backups: Vec<String>,
 }
 
 fn merge_parse(archive: &mut ArchiveScan, output: ParseOutput) {
@@ -2631,6 +2634,10 @@ pub fn scan_tar_bytes(
         if path_bytes.ends_with(b"dathost_settings_backup.json") {
             return Ok(());
         }
+        if let Some(folder) = auto_backup_folder(internal_path) {
+            note_auto_backup(&mut archive, folder);
+            return Ok(());
+        }
         if internal_path.ends_with(".fch") {
             archive.player_profiles_present = true;
             return Ok(());
@@ -2696,6 +2703,22 @@ pub fn scan_tar_bytes(
 
 const MAX_CHUNK_FILE_BYTES: u64 = 128 * 1024 * 1024;
 
+/// The dedicated server's own rotating world backup folder a tar path sits in, if any. The server
+/// names them `<world>_backup_auto-yyyyMMdd-HHmmss` (`SaveSystem.cs`, `c_BackupAutoNaming`); each
+/// is a full, older copy of the world with its own chunk index, so a scan must not add it to the
+/// live world.
+fn auto_backup_folder(internal_path: &str) -> Option<&str> {
+    internal_path
+        .split('/')
+        .find(|part| part.contains("_backup_auto-"))
+}
+
+fn note_auto_backup(archive: &mut ArchiveScan, folder: &str) {
+    if !archive.auto_backups.iter().any(|known| known == folder) {
+        archive.auto_backups.push(folder.to_string());
+    }
+}
+
 /// One file the scrub writes out, with a path relative to `worlds_local/` (i.e. what the owner
 /// would drop into their host's save directory).
 #[derive(Debug, Clone)]
@@ -2712,7 +2735,10 @@ pub struct ScrubbedFile {
 pub struct ScrubOutcome {
     pub files: Vec<ScrubbedFile>,
     pub patches: Vec<ScrubPatch>,
+    /// ZDOs in the live world (automatic backups are scrubbed too but not counted here).
     pub zdo_count: u64,
+    /// The server's own `_backup_auto-` world folders, scrubbed alongside the live world.
+    pub auto_backups: Vec<String>,
 }
 
 /// Path within the tar, relative to `worlds_local/` (the world save directory itself), or `None`
@@ -2728,20 +2754,32 @@ fn world_relative_path(internal_path: &str) -> Option<String> {
 /// The world files inside a backup tar, each with its offset in the tar. Only v41 chunked worlds
 /// are accepted; any file under `worlds_local/` whose layout is not known fails the read closed.
 struct WorldTar {
+    /// The world's folder under `worlds_local/`.
+    folder: String,
+    /// One of the dedicated server's rotating `_backup_auto-` copies, not the live world.
+    auto_backup: bool,
     metadata: Vec<ChunkMeta>,
     metadata_total: i32,
     /// Sorted by path.
     chunks: Vec<ScrubbedFile>,
-    /// Everything else under `worlds_local/`, the `.chunks` index included.
+    /// Everything else in the folder, the `.chunks` index included.
     passthrough: Vec<ScrubbedFile>,
 }
 
-fn read_world_tar(bytes: &[u8]) -> Result<WorldTar, ScanError> {
+/// Every world folder under `worlds_local/` in a backup tar, the live world first. Each folder is a
+/// complete world save with its own `.chunks` index: the live world plus any of the dedicated
+/// server's rotating `_backup_auto-` copies. Exactly one live world is required, only v41 chunked
+/// worlds are accepted, and any file whose layout is not known fails the read closed.
+fn read_world_tars(bytes: &[u8]) -> Result<Vec<WorldTar>, ScanError> {
+    #[derive(Default)]
+    struct Folder {
+        metadata: Vec<ChunkMeta>,
+        total: Option<i32>,
+        chunks: Vec<ScrubbedFile>,
+        passthrough: Vec<ScrubbedFile>,
+    }
+    let mut folders: std::collections::BTreeMap<String, Folder> = Default::default();
     let mut tar = TarStream::new(bytes);
-    let mut metadata: Vec<ChunkMeta> = Vec::new();
-    let mut metadata_total: Option<i32> = None;
-    let mut chunks: Vec<ScrubbedFile> = Vec::new();
-    let mut passthrough: Vec<ScrubbedFile> = Vec::new();
     tar.for_each_entry(|header, body| {
         let path_bytes = header.path();
         let internal_path =
@@ -2751,6 +2789,12 @@ fn read_world_tar(bytes: &[u8]) -> Result<WorldTar, ScanError> {
             // Outside worlds_local/: not part of the world save, never copied or touched.
             return Ok(());
         };
+        let parts: Vec<&str> = world_path.split('/').collect();
+        if parts.len() < 3 {
+            return Err(error(format!(
+                "world file outside a world folder, refusing to scrub: {internal_path}"
+            )));
+        }
         let tar_offset = (bytes.len() - body.reader.len()) as u64;
         let limit = if internal_path.ends_with(".chunks")
             || internal_path.ends_with(".fwl2")
@@ -2768,8 +2812,9 @@ fn read_world_tar(bytes: &[u8]) -> Result<WorldTar, ScanError> {
                 "cannot account for world file, refusing to scrub: {internal_path}"
             )));
         };
+        let folder = folders.entry(parts[1].to_string()).or_default();
         let file = ScrubbedFile {
-            path: world_path,
+            path: world_path.clone(),
             bytes: read_bounded(body, limit)?,
             tar_offset,
         };
@@ -2780,29 +2825,48 @@ fn read_world_tar(bytes: &[u8]) -> Result<WorldTar, ScanError> {
                     "unexpected chunks metadata version {version}"
                 )));
             }
-            metadata_total = Some(total);
-            metadata = entries;
+            if folder.total.is_some() {
+                return Err(error(format!("{}: more than one chunk index", parts[1])));
+            }
+            folder.total = Some(total);
+            folder.metadata = entries;
         }
         if internal_path.ends_with(".chunk") {
-            chunks.push(file);
+            folder.chunks.push(file);
         } else {
-            passthrough.push(file);
+            folder.passthrough.push(file);
         }
         Ok(())
     })?;
     tar.reject_nonzero_trailing()?;
-    let metadata_total = metadata_total
-        .ok_or_else(|| error("world archive has no chunk metadata (.chunks) file"))?;
-    if chunks.is_empty() {
-        return Err(error("world archive has no chunk files"));
+    let mut worlds = Vec::new();
+    for (name, mut folder) in folders {
+        let metadata_total = folder.total.ok_or_else(|| {
+            error(format!(
+                "{name}: world folder has no chunk metadata (.chunks) file"
+            ))
+        })?;
+        if folder.chunks.is_empty() {
+            return Err(error(format!("{name}: world folder has no chunk files")));
+        }
+        folder.chunks.sort_by(|a, b| a.path.cmp(&b.path));
+        worlds.push(WorldTar {
+            auto_backup: name.contains("_backup_auto-"),
+            folder: name,
+            metadata: folder.metadata,
+            metadata_total,
+            chunks: folder.chunks,
+            passthrough: folder.passthrough,
+        });
     }
-    chunks.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(WorldTar {
-        metadata,
-        metadata_total,
-        chunks,
-        passthrough,
-    })
+    let live = worlds.iter().filter(|world| !world.auto_backup).count();
+    if live != 1 {
+        return Err(error(format!(
+            "expected exactly one live world folder under worlds_local/, found {live}"
+        )));
+    }
+    worlds.sort_by_key(|world| (world.auto_backup, world.folder.clone()));
+    Ok(worlds)
 }
 
 /// Clears cheat flags in place, on a copy: reads a decompressed world tar, finds every
@@ -2821,61 +2885,61 @@ pub fn scrub_world_tar_bytes(
     bytes: &[u8],
     prefabs: &PrefabNames,
 ) -> Result<ScrubOutcome, ScanError> {
-    let WorldTar {
-        metadata,
-        metadata_total,
-        chunks: chunk_files,
-        passthrough: passthrough_files,
-    } = read_world_tar(bytes)?;
-
     let mut outcome = ScrubOutcome::default();
-    for chunk in &chunk_files {
-        let mut sink = ScrubSink::default();
-        let mut reader = &chunk.bytes[..];
-        let before = parse_chunk_reader(
-            &mut reader,
-            chunk.bytes.len() as u64,
-            "",
-            "",
-            &chunk.path,
-            prefabs,
-            &metadata,
-            &mut sink,
-        )?;
-        let mut patches = sink.patches;
-        for patch in &mut patches {
-            patch.file_path = chunk.path.clone();
+    for world in read_world_tars(bytes)? {
+        let mut world_zdos = 0u64;
+        for chunk in &world.chunks {
+            let mut sink = ScrubSink::default();
+            let mut reader = &chunk.bytes[..];
+            let before = parse_chunk_reader(
+                &mut reader,
+                chunk.bytes.len() as u64,
+                "",
+                "",
+                &chunk.path,
+                prefabs,
+                &world.metadata,
+                &mut sink,
+            )?;
+            let mut patches = sink.patches;
+            for patch in &mut patches {
+                patch.file_path = chunk.path.clone();
+            }
+
+            let mut scrubbed = chunk.bytes.clone();
+            for patch in &patches {
+                apply_patch(&mut scrubbed, patch, &chunk.path)?;
+            }
+            verify_scrub(
+                &chunk.path,
+                &chunk.bytes,
+                &scrubbed,
+                &patches,
+                &before,
+                prefabs,
+            )?;
+
+            world_zdos += before.zdo_count;
+            outcome.patches.extend(patches);
+            outcome.files.push(ScrubbedFile {
+                path: chunk.path.clone(),
+                bytes: scrubbed,
+                tar_offset: chunk.tar_offset,
+            });
         }
-
-        let mut scrubbed = chunk.bytes.clone();
-        for patch in &patches {
-            apply_patch(&mut scrubbed, patch, &chunk.path)?;
+        if world.metadata_total != world_zdos as i32 {
+            return Err(error(format!(
+                "{}: chunk total mismatch: metadata {}, parsed {world_zdos}",
+                world.folder, world.metadata_total
+            )));
         }
-        verify_scrub(
-            &chunk.path,
-            &chunk.bytes,
-            &scrubbed,
-            &patches,
-            &before,
-            prefabs,
-        )?;
-
-        outcome.zdo_count += before.zdo_count;
-        outcome.patches.extend(patches);
-        outcome.files.push(ScrubbedFile {
-            path: chunk.path.clone(),
-            bytes: scrubbed,
-            tar_offset: chunk.tar_offset,
-        });
+        if world.auto_backup {
+            outcome.auto_backups.push(world.folder);
+        } else {
+            outcome.zdo_count = world_zdos;
+        }
+        outcome.files.extend(world.passthrough);
     }
-    if metadata_total != outcome.zdo_count as i32 {
-        return Err(error(format!(
-            "chunk total mismatch: metadata {metadata_total}, parsed {}",
-            outcome.zdo_count
-        )));
-    }
-
-    outcome.files.extend(passthrough_files);
     outcome.files.sort_by(|a, b| a.path.cmp(&b.path));
     outcome
         .patches
@@ -2986,6 +3050,7 @@ pub fn scrub_chunk_in_place(
         }],
         patches,
         zdo_count: before.zdo_count,
+        auto_backups: Vec::new(),
     };
     Ok((patched, outcome))
 }
@@ -3042,8 +3107,12 @@ pub struct ScrubAction {
 #[derive(Debug)]
 pub struct ScrubReport {
     pub mode: ScrubMode,
+    /// ZDOs in the live world before and after; automatic backups are scrubbed the same way.
     pub zdo_count_before: u64,
     pub zdo_count_after: u64,
+    /// The server's own `_backup_auto-` world folders, scrubbed alongside the live world.
+    pub auto_backups: Vec<String>,
+    /// Every action, automatic backups included (their `file_path` names the folder).
     pub actions: Vec<ScrubAction>,
 }
 
@@ -3053,6 +3122,7 @@ impl ScrubReport {
             mode: ScrubMode::Clean,
             zdo_count_before: outcome.zdo_count,
             zdo_count_after: outcome.zdo_count,
+            auto_backups: outcome.auto_backups.clone(),
             actions: outcome
                 .patches
                 .iter()
@@ -3514,28 +3584,109 @@ pub fn scrub_tar(
         return Ok((patched, ScrubReport::from_patches(&outcome)));
     }
     reject_extended_tar_headers(bytes)?;
-    let world = read_world_tar(bytes)?;
+    let worlds = read_world_tars(bytes)?;
     let mut report = ScrubReport {
         mode,
         zdo_count_before: 0,
         zdo_count_after: 0,
+        auto_backups: Vec::new(),
         actions: Vec::new(),
     };
-    let mut rebuilt: Vec<(&ScrubbedFile, RebuiltChunk)> = Vec::new();
-    let mut kept_object_flags = 0usize;
-    for chunk in &world.chunks {
-        let result = rebuild_chunk(&chunk.bytes, &chunk.path, prefabs, &world.metadata, mode)?;
-        report.zdo_count_before += result.zdo_count_before;
-        report.zdo_count_after += result.zdo_count_before - result.dropped;
-        kept_object_flags += result.kept_object_flags;
-        if result.changed {
-            rebuilt.push((chunk, result));
+    let mut rebuilds = Vec::new();
+    let mut live_kept_flags = 0usize;
+    for world in &worlds {
+        let rebuild = rebuild_world(world, prefabs, mode)?;
+        if world.auto_backup {
+            report.auto_backups.push(world.folder.clone());
+        } else {
+            report.zdo_count_before = rebuild.before;
+            report.zdo_count_after = rebuild.after;
+            live_kept_flags = rebuild.kept_object_flags;
+        }
+        rebuilds.push(rebuild);
+    }
+    let mut replaced: Vec<(u64, &[u8])> = Vec::new();
+    for rebuild in &rebuilds {
+        replaced.push((rebuild.index.0, rebuild.index.1.as_slice()));
+        for (offset, chunk) in &rebuild.chunks {
+            replaced.push((*offset, chunk.bytes.as_slice()));
         }
     }
-    if report.zdo_count_before != world.metadata_total as u64 {
+    let out = splice_tar(bytes, replaced)?;
+    for rebuild in rebuilds.iter_mut() {
+        for (_, chunk) in rebuild.chunks.iter_mut() {
+            report.actions.append(&mut chunk.actions);
+        }
+    }
+
+    // The result must read back with every world folder at exactly the count its rebuild claims,
+    // and the live world must rescan to exactly the evidence the mode leaves.
+    for (world, rebuild) in read_world_tars(&out)?.iter().zip(&rebuilds) {
+        if world.metadata_total as u64 != rebuild.after {
+            return Err(error(format!(
+                "{}: rebuilt chunk index does not match its chunks",
+                world.folder
+            )));
+        }
+    }
+    let rescanned = scan_tar_bytes(&out, "scrubbed.tar", prefabs)?;
+    let expected_evidence = if mode == ScrubMode::Destroy {
+        0
+    } else {
+        live_kept_flags
+    };
+    let object_evidence = rescanned
+        .evidence
+        .iter()
+        .filter(|hit| matches!(hit.kind.as_str(), "zdo_cheated" | "station_queued_cheated"))
+        .count();
+    if rescanned.zdo_count != report.zdo_count_after
+        || rescanned.evidence.len() != expected_evidence
+        || object_evidence != expected_evidence
+    {
         return Err(error(format!(
-            "chunk total mismatch: metadata {}, parsed {}",
-            world.metadata_total, report.zdo_count_before
+            "rescan of the scrubbed tar found {} ZDOs and {} evidence entries (expected {} and {})",
+            rescanned.zdo_count,
+            rescanned.evidence.len(),
+            report.zdo_count_after,
+            expected_evidence
+        )));
+    }
+    Ok((out, report))
+}
+
+/// One world folder's delete/destroy rebuild: its changed chunks (by tar offset) and its `.chunks`
+/// index with the counts patched in place.
+struct WorldRebuild {
+    before: u64,
+    after: u64,
+    kept_object_flags: usize,
+    chunks: Vec<(u64, RebuiltChunk)>,
+    index: (u64, Vec<u8>),
+}
+
+fn rebuild_world(
+    world: &WorldTar,
+    prefabs: &PrefabNames,
+    mode: ScrubMode,
+) -> Result<WorldRebuild, ScanError> {
+    let mut before = 0u64;
+    let mut after = 0u64;
+    let mut kept_object_flags = 0usize;
+    let mut chunks = Vec::new();
+    for chunk in &world.chunks {
+        let result = rebuild_chunk(&chunk.bytes, &chunk.path, prefabs, &world.metadata, mode)?;
+        before += result.zdo_count_before;
+        after += result.zdo_count_before - result.dropped;
+        kept_object_flags += result.kept_object_flags;
+        if result.changed {
+            chunks.push((chunk.tar_offset, result));
+        }
+    }
+    if before != world.metadata_total as u64 {
+        return Err(error(format!(
+            "{}: chunk total mismatch: metadata {}, parsed {before}",
+            world.folder, world.metadata_total
         )));
     }
 
@@ -3545,9 +3696,19 @@ pub fn scrub_tar(
         .passthrough
         .iter()
         .find(|file| file.path.ends_with(".chunks"))
-        .ok_or_else(|| error("world archive has no chunk metadata (.chunks) file"))?;
+        .ok_or_else(|| {
+            error(format!(
+                "{}: no chunk metadata (.chunks) file",
+                world.folder
+            ))
+        })?;
     let mut index = index_file.bytes.clone();
-    for (chunk, result) in &rebuilt {
+    for (offset, result) in &chunks {
+        let chunk = world
+            .chunks
+            .iter()
+            .find(|chunk| chunk.tar_offset == *offset)
+            .expect("rebuilt chunk comes from this world");
         let name = chunk.path.rsplit('/').next().unwrap_or(&chunk.path);
         let (size, version, chunk_index) = parse_chunk_name(name)?;
         let entry = world
@@ -3566,45 +3727,14 @@ pub fn scrub_tar(
         let new_count = (result.zdo_count_before - result.dropped) as i32;
         index[count_at..count_at + 4].copy_from_slice(&new_count.to_le_bytes());
     }
-    index[2..6].copy_from_slice(&(report.zdo_count_after as i32).to_le_bytes());
-
-    let mut replaced: Vec<(u64, &[u8])> = rebuilt
-        .iter()
-        .map(|(chunk, result)| (chunk.tar_offset, result.bytes.as_slice()))
-        .collect();
-    replaced.push((index_file.tar_offset, index.as_slice()));
-    let out = splice_tar(bytes, replaced)?;
-    for (_, result) in rebuilt {
-        report.actions.extend(result.actions);
-    }
-
-    // The result must read back as a world with exactly the counts the rebuild claims.
-    let reread = read_world_tar(&out)?;
-    let rescanned = scan_tar_bytes(&out, "scrubbed.tar", prefabs)?;
-    let expected_evidence = if mode == ScrubMode::Destroy {
-        0
-    } else {
-        kept_object_flags
-    };
-    let object_evidence = rescanned
-        .evidence
-        .iter()
-        .filter(|hit| matches!(hit.kind.as_str(), "zdo_cheated" | "station_queued_cheated"))
-        .count();
-    if reread.metadata_total as u64 != report.zdo_count_after
-        || rescanned.zdo_count != report.zdo_count_after
-        || rescanned.evidence.len() != expected_evidence
-        || object_evidence != expected_evidence
-    {
-        return Err(error(format!(
-            "rescan of the scrubbed tar found {} ZDOs and {} evidence entries (expected {} and {})",
-            rescanned.zdo_count,
-            rescanned.evidence.len(),
-            report.zdo_count_after,
-            expected_evidence
-        )));
-    }
-    Ok((out, report))
+    index[2..6].copy_from_slice(&(after as i32).to_le_bytes());
+    Ok(WorldRebuild {
+        before,
+        after,
+        kept_object_flags,
+        chunks,
+        index: (index_file.tar_offset, index),
+    })
 }
 
 /// Adds a content checksum to one zstd frame made without one, as a host's `.tar.zst` backup has:
@@ -3737,10 +3867,16 @@ fn scrub_audit_json(report: &ScrubReport) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"mode\":{},\"zdo_count_before\":{},\"zdo_count_after\":{},\"action_count\":{},\"actions\":[{}]}}",
+        "{{\"mode\":{},\"zdo_count_before\":{},\"zdo_count_after\":{},\"auto_backups\":[{}],\"action_count\":{},\"actions\":[{}]}}",
         json_string(report.mode.as_str()),
         report.zdo_count_before,
         report.zdo_count_after,
+        report
+            .auto_backups
+            .iter()
+            .map(|folder| json_string(folder))
+            .collect::<Vec<_>>()
+            .join(","),
         report.actions.len(),
         actions
     )
@@ -3757,8 +3893,19 @@ fn scrub_audit_markdown(report: &ScrubReport) -> String {
         report.zdo_count_before,
         report.zdo_count_after
     );
+    if !report.auto_backups.is_empty() {
+        md.push_str(&format!(
+            "The server's own automatic backups in this archive were scrubbed the same way: {}\n\n",
+            report.auto_backups.join(", ")
+        ));
+    }
+    // Summarize the live world; the table below lists every folder's actions.
     let mut summary: Vec<(&str, usize, usize)> = Vec::new();
-    for action in &report.actions {
+    for action in report
+        .actions
+        .iter()
+        .filter(|action| !action.file_path.contains("_backup_auto-"))
+    {
         match summary
             .iter_mut()
             .find(|(name, _, _)| *name == action.action)
@@ -3851,9 +3998,11 @@ pub fn scrub_world_archive(
         (outcome.files, report)
     } else {
         let (tar, report) = scrub_tar(&bytes, prefabs, mode)?;
-        let world = read_world_tar(&tar)?;
-        let mut files = world.chunks;
-        files.extend(world.passthrough);
+        let mut files = Vec::new();
+        for world in read_world_tars(&tar)? {
+            files.extend(world.chunks);
+            files.extend(world.passthrough);
+        }
         (files, report)
     };
 
@@ -4039,6 +4188,10 @@ pub fn scan_archive(
         }
         let internal_path =
             std::str::from_utf8(path_bytes).map_err(|_| error("invalid tar path"))?;
+        if let Some(folder) = auto_backup_folder(internal_path) {
+            note_auto_backup(&mut archive, folder);
+            return Ok(());
+        }
         if internal_path.ends_with(".fch") {
             archive.player_profiles_present = true;
             return Ok(());
@@ -4494,7 +4647,7 @@ fn json_world(archive: &ArchiveScan) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "\"world_version\":{},\"world_name\":{},\"world_seed\":{},\"world_player_count\":{},\"global_keys\":[{}],\"world_metadata_error\":{}",
+        "\"world_version\":{},\"world_name\":{},\"world_seed\":{},\"world_player_count\":{},\"global_keys\":[{}],\"world_metadata_error\":{},\"auto_backups\":[{}]",
         archive
             .world
             .version
@@ -4509,6 +4662,12 @@ fn json_world(archive: &ArchiveScan) -> String {
             .unwrap_or_else(|| "null".to_string()),
         keys,
         json_opt_string(archive.world_metadata_error.as_deref()),
+        archive
+            .auto_backups
+            .iter()
+            .map(|folder| json_string(folder))
+            .collect::<Vec<_>>()
+            .join(","),
     )
 }
 
@@ -6841,17 +7000,60 @@ mod tests {
         assert!(rescan.evidence.is_empty(), "nothing flagged survives");
     }
 
-    #[test]
-    fn delete_modes_rewrite_the_tar_index_and_headers_and_keep_other_files() {
-        let (chunk, prefabs) = mode_test_chunk();
+    /// A `.chunks` index listing only `00_00__1_1.chunk`, holding `count` ZDOs.
+    fn single_chunk_index(count: i32) -> Vec<u8> {
         let mut index = Vec::new();
         push_i16(&mut index, 41);
-        push_i32(&mut index, 6);
+        push_i32(&mut index, count);
         push_i32(&mut index, 1);
         push_u16(&mut index, 0);
         index.push(1);
         index.extend(1u32.to_le_bytes());
-        push_i32(&mut index, 6);
+        push_i32(&mut index, count);
+        index
+    }
+
+    #[test]
+    fn server_auto_backups_are_skipped_by_scans_and_scrubbed_with_the_live_world() {
+        let (chunk, prefabs) = mode_test_chunk();
+        let backup = "Dedicated_backup_auto-20260927-121154";
+        let mut tar = Vec::new();
+        for folder in ["Dedicated", backup] {
+            let base = format!("SaveDir/worlds_local/{folder}");
+            append_tar_entry(
+                &mut tar,
+                &format!("{base}/_main.1.chunks"),
+                &single_chunk_index(6),
+            );
+            append_tar_entry(&mut tar, &format!("{base}/00_00__1_1.chunk"), &chunk);
+        }
+        finish_tar(&mut tar);
+
+        let scan = scan_tar_bytes(&tar, "a.tar", &prefabs).unwrap();
+        assert_eq!(scan.zdo_count, 6, "only the live world is scanned");
+        assert_eq!(scan.auto_backups, [backup]);
+
+        let (out, report) = scrub_tar(&tar, &prefabs, ScrubMode::Destroy).unwrap();
+        assert_eq!((report.zdo_count_before, report.zdo_count_after), (6, 3));
+        assert_eq!(report.auto_backups, [backup]);
+        let worlds = read_world_tars(&out).unwrap();
+        assert_eq!(worlds.len(), 2);
+        assert!(
+            worlds.iter().all(|world| world.metadata_total == 3),
+            "both copies destroyed alike"
+        );
+
+        let (_, clean) = scrub_tar(&tar, &prefabs, ScrubMode::Clean).unwrap();
+        assert!(clean
+            .actions
+            .iter()
+            .any(|action| action.file_path.contains(backup)));
+    }
+
+    #[test]
+    fn delete_modes_rewrite_the_tar_index_and_headers_and_keep_other_files() {
+        let (chunk, prefabs) = mode_test_chunk();
+        let index = single_chunk_index(6);
         let mut tar = Vec::new();
         append_tar_entry(
             &mut tar,
@@ -6868,7 +7070,7 @@ mod tests {
 
         let (out, report) = scrub_tar(&tar, &prefabs, ScrubMode::Destroy).unwrap();
         assert_eq!((report.zdo_count_before, report.zdo_count_after), (6, 3));
-        let world = read_world_tar(&out).unwrap();
+        let world = read_world_tars(&out).unwrap().remove(0);
         assert_eq!(world.metadata_total, 3);
         let listed = i32::from_le_bytes(world.passthrough[0].bytes[17..21].try_into().unwrap());
         assert_eq!(

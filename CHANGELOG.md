@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- Backups that also carry the dedicated server's own rotating world backups
+  (`worlds_local/<world>_backup_auto-yyyyMMdd-HHmmss/`, full older copies with their own chunk index)
+  failed with "chunk total mismatch": every copy's chunks were added to the live world (4,761,000 vs
+  952,833 on the owner's 2026-09-27 backup, which holds four). Scans now read only the live world and
+  list the automatic backups (`auto_backups` per archive in the JSON, a line in World details); scrubs
+  change every world folder the same way, each verified against its own index, so no flagged copy
+  survives in a scrubbed backup. On that backup a local dedicated server loads all three scrub modes
+  and a scrubbed automatic backup restored as the live world without errors.
+
 - Mountain (and other real-marker) biome undercount: `prefab_biomes.txt` now marks flora-hint entries
   (trees the game's own tables never resolve) with a trailing `hint` column, and a cell's biome verdict
   is decided from real, game-tagged evidence alone whenever that alone clears the evidence bar — dense

@@ -413,9 +413,11 @@ function WorldDetailsPanel({ archive, copy, copied }: { archive: Archive; copy: 
         </span>}
         {archive.world_player_count != null && <span>{archive.world_player_count} player{archive.world_player_count === 1 ? '' : 's'}</span>}
         <span>{flags.length} progression flag{flags.length === 1 ? '' : 's'}</span>
+        {(archive.auto_backups?.length ?? 0) > 0 && <span>+{archive.auto_backups!.length} automatic backup{archive.auto_backups!.length === 1 ? '' : 's'} (not scanned)</span>}
       </span>
     </summary>
     <div className="world-details-body">
+      {(archive.auto_backups?.length ?? 0) > 0 && <p className="explanation">This backup also holds the server's own automatic world backups, older full copies of the world. Only the live world is scanned; a scrub changes the backups the same way. {archive.auto_backups!.join(', ')}</p>}
       {flags.length > 0 && <ul className="world-flags">{flags.map((flag) => <li key={flag.key}><code>{flag.key}</code>{flag.value != null && <span>{flag.value}</span>}</li>)}</ul>}
       {archive.world_metadata_error && <p className="inline-error" role="alert">World metadata: {archive.world_metadata_error}</p>}
     </div>

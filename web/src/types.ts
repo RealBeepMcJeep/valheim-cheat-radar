@@ -56,6 +56,8 @@ export type Archive = {
   world_player_count?: number | null;
   global_keys?: { key: string; value: number | null }[];
   world_metadata_error?: string | null;
+  /** The dedicated server's own rotating world backups inside this archive; not scanned. */
+  auto_backups?: string[];
 };
 
 export type Character = {

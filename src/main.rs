@@ -135,17 +135,27 @@ fn main() {
                 }
             };
             let mut counts: Vec<(&str, usize)> = Vec::new();
-            for action in &report.actions {
+            let live_actions = report
+                .actions
+                .iter()
+                .filter(|action| !action.file_path.contains("_backup_auto-"));
+            for action in live_actions {
                 match counts.iter_mut().find(|(name, _)| *name == action.action) {
                     Some(count) => count.1 += 1,
                     None => counts.push((action.action, 1)),
                 }
             }
-            let summary = counts
+            let mut summary = counts
                 .iter()
                 .map(|(name, count)| format!("{name} {count}"))
                 .collect::<Vec<_>>()
                 .join(", ");
+            if !report.auto_backups.is_empty() {
+                summary.push_str(&format!(
+                    " (the same in {} automatic server backup(s))",
+                    report.auto_backups.len()
+                ));
+            }
             println!(
                 "scrubbed {} ({} mode) in {:.3}s: ZDOs {} -> {}; {}; output written to {}",
                 archive.display(),
