@@ -5,8 +5,48 @@
 export class BrowserScanner {
   free(): void;
 /**
+* @returns {string}
+*/
+  report_csv(): string;
+/**
+* @returns {string}
+*/
+  report_json(): string;
+/**
+* @returns {number}
+*/
+  archive_count(): number;
+/**
+* @param {number} index
+*/
+  set_canonical(index: number): void;
+/**
+* @returns {number}
+*/
+  character_count(): number;
+/**
+* @returns {string}
+*/
+  report_markdown(): string;
+/**
+* @param {string} name
+* @param {Uint8Array} bytes
+* @param {number} modified_unix_millis
+* @param {number} input_id
+*/
+  add_file_with_metadata(name: string, bytes: Uint8Array, modified_unix_millis: number, input_id: number): void;
+/**
+* @param {string} name
+* @param {Uint8Array} bytes
+* @param {number} modified_unix_millis
+*/
+  add_file_with_modified_unix(name: string, bytes: Uint8Array, modified_unix_millis: number): void;
+/**
 */
   constructor();
+/**
+*/
+  reset(): void;
 /**
 * @param {string} name
 * @param {Uint8Array} bytes
@@ -17,46 +57,6 @@ export class BrowserScanner {
 * @param {Uint8Array} bytes
 */
   add_file(name: string, bytes: Uint8Array): void;
-/**
-* @param {string} name
-* @param {Uint8Array} bytes
-* @param {number} modified_unix_millis
-*/
-  add_file_with_modified_unix(name: string, bytes: Uint8Array, modified_unix_millis: number): void;
-/**
-* @param {string} name
-* @param {Uint8Array} bytes
-* @param {number} modified_unix_millis
-* @param {number} input_id
-*/
-  add_file_with_metadata(name: string, bytes: Uint8Array, modified_unix_millis: number, input_id: number): void;
-/**
-* @param {number} index
-*/
-  set_canonical(index: number): void;
-/**
-*/
-  reset(): void;
-/**
-* @returns {string}
-*/
-  report_json(): string;
-/**
-* @returns {string}
-*/
-  report_csv(): string;
-/**
-* @returns {string}
-*/
-  report_markdown(): string;
-/**
-* @returns {number}
-*/
-  archive_count(): number;
-/**
-* @returns {number}
-*/
-  character_count(): number;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -64,22 +64,22 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
   readonly __wbg_browserscanner_free: (a: number) => void;
-  readonly browserscanner_new: () => number;
-  readonly browserscanner_add_tar: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
   readonly browserscanner_add_file: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
-  readonly browserscanner_add_file_with_modified_unix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
   readonly browserscanner_add_file_with_metadata: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
-  readonly browserscanner_set_canonical: (a: number, b: number, c: number) => void;
-  readonly browserscanner_reset: (a: number) => void;
-  readonly browserscanner_report_json: (a: number, b: number) => void;
-  readonly browserscanner_report_csv: (a: number, b: number) => void;
-  readonly browserscanner_report_markdown: (a: number, b: number) => void;
+  readonly browserscanner_add_file_with_modified_unix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+  readonly browserscanner_add_tar: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
   readonly browserscanner_archive_count: (a: number) => number;
   readonly browserscanner_character_count: (a: number) => number;
+  readonly browserscanner_new: () => number;
+  readonly browserscanner_report_csv: (a: number, b: number) => void;
+  readonly browserscanner_report_json: (a: number, b: number) => void;
+  readonly browserscanner_report_markdown: (a: number, b: number) => void;
+  readonly browserscanner_reset: (a: number) => void;
+  readonly browserscanner_set_canonical: (a: number, b: number, c: number) => void;
   readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
+  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;

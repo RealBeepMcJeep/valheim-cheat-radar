@@ -1,5 +1,5 @@
-# <prefab name><TAB><biome>[,<biome>...] — extracted from the game's bundles by
-# tools/extract-prefab-data.py. Cells are coloured from these; see README.md.
+# <prefab name><TAB><biome>[,<biome>...][<TAB>hint] — extracted from the game's bundles by
+# tools/extract-prefab-data.py. Cells are coloured from these; see README.md and FORMAT.md.
 AbandonedLogCabin02	mountain
 AbandonedLogCabin03	mountain
 AbandonedLogCabin04	mountain
@@ -11,81 +11,81 @@ Ashlands Ocean	ocean
 Ashlands grass long	ashlands
 Ashlands grass short	ashlands
 Barka	deepnorth
-Barley	plains
-BarleyFlour	plains
-BarleyWine	plains
-BarleyWineBase	plains
+Barley	plains	hint
+BarleyFlour	plains	hint
+BarleyWine	plains	hint
+BarleyWineBase	plains	hint
 Bat	swamp
 Bat Swamp	swamp
 BearCave	blackforest
-Beech	meadows
-Beech (1)	meadows
-Beech (10)	meadows
-Beech (11)	meadows
-Beech (12)	meadows
-Beech (13)	meadows
-Beech (14)	meadows
-Beech (15)	meadows
-Beech (16)	meadows
-Beech (17)	meadows
-Beech (18)	meadows
-Beech (19)	meadows
-Beech (2)	meadows
-Beech (20)	meadows
-Beech (21)	meadows
-Beech (22)	meadows
-Beech (23)	meadows
-Beech (24)	meadows
-Beech (25)	meadows
-Beech (26)	meadows
-Beech (27)	meadows
-Beech (28)	meadows
-Beech (29)	meadows
-Beech (3)	meadows
-Beech (30)	meadows
-Beech (31)	meadows
-Beech (32)	meadows
-Beech (33)	meadows
-Beech (34)	meadows
-Beech (35)	meadows
-Beech (36)	meadows
-Beech (37)	meadows
-Beech (38)	meadows
-Beech (4)	meadows
-Beech (5)	meadows
-Beech (6)	meadows
-Beech (7)	meadows
-Beech (8)	meadows
-Beech (9)	meadows
-Beech1	meadows
-BeechSeeds	meadows
-Beech_Sapling	meadows
-Beech_Stub	meadows
-Beech_small1	meadows
-Beech_small1 (1)	meadows
-Beech_small2	meadows
+Beech	meadows	hint
+Beech (1)	meadows	hint
+Beech (10)	meadows	hint
+Beech (11)	meadows	hint
+Beech (12)	meadows	hint
+Beech (13)	meadows	hint
+Beech (14)	meadows	hint
+Beech (15)	meadows	hint
+Beech (16)	meadows	hint
+Beech (17)	meadows	hint
+Beech (18)	meadows	hint
+Beech (19)	meadows	hint
+Beech (2)	meadows	hint
+Beech (20)	meadows	hint
+Beech (21)	meadows	hint
+Beech (22)	meadows	hint
+Beech (23)	meadows	hint
+Beech (24)	meadows	hint
+Beech (25)	meadows	hint
+Beech (26)	meadows	hint
+Beech (27)	meadows	hint
+Beech (28)	meadows	hint
+Beech (29)	meadows	hint
+Beech (3)	meadows	hint
+Beech (30)	meadows	hint
+Beech (31)	meadows	hint
+Beech (32)	meadows	hint
+Beech (33)	meadows	hint
+Beech (34)	meadows	hint
+Beech (35)	meadows	hint
+Beech (36)	meadows	hint
+Beech (37)	meadows	hint
+Beech (38)	meadows	hint
+Beech (4)	meadows	hint
+Beech (5)	meadows	hint
+Beech (6)	meadows	hint
+Beech (7)	meadows	hint
+Beech (8)	meadows	hint
+Beech (9)	meadows	hint
+Beech1	meadows	hint
+BeechSeeds	meadows	hint
+Beech_Sapling	meadows	hint
+Beech_Stub	meadows	hint
+Beech_small1	meadows	hint
+Beech_small1 (1)	meadows	hint
+Beech_small2	meadows	hint
 BigRockClearing	blackforest
 Birch Meadows	meadows
-Birch1	meadows,plains
-Birch1_aut	meadows,plains
-Birch2	meadows,plains
-Birch2_aut	meadows,plains
-BirchSeeds	meadows,plains
-BirchSeeds001	meadows,plains
-BirchSeeds002	meadows,plains
-BirchStub	meadows,plains
-Birch_Sapling	meadows,plains
-Birch_log	meadows,plains
-Birch_log_half	meadows,plains
+Birch1	meadows,plains	hint
+Birch1_aut	meadows,plains	hint
+Birch2	meadows,plains	hint
+Birch2_aut	meadows,plains	hint
+BirchSeeds	meadows,plains	hint
+BirchSeeds001	meadows,plains	hint
+BirchSeeds002	meadows,plains	hint
+BirchStub	meadows,plains	hint
+Birch_Sapling	meadows,plains	hint
+Birch_log	meadows,plains	hint
+Birch_log_half	meadows,plains	hint
 Bjorn DAY	blackforest
 Bjorn NIGHT	blackforest
 Blob	swamp
 BlobElite	swamp
 Blueberry Black Forest	blackforest
-BlueberryBush	blackforest,meadows
-BlueberryBush (1)	blackforest,meadows
-BlueberryBush (2)	blackforest,meadows
-BlueberryBush (3)	blackforest,meadows
+BlueberryBush	blackforest,meadows	hint
+BlueberryBush (1)	blackforest,meadows	hint
+BlueberryBush (2)	blackforest,meadows	hint
+BlueberryBush (3)	blackforest,meadows	hint
 Boar	meadows
 Boars	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 Bog Swamp	swamp
@@ -96,21 +96,21 @@ Bones	mistlands,plains,swamp
 Boss	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 BroodSwarm Mistlands	mistlands
 Broods	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
-Bush01	blackforest,meadows
-Bush01 (1)	blackforest,meadows
-Bush01_deepnorth	blackforest,meadows
-Bush01_deepnorth (1)	blackforest,meadows
-Bush01_deepnorth (2)	blackforest,meadows
-Bush01_deepnorth (3)	blackforest,meadows
-Bush01_deepnorth (4)	blackforest,meadows
-Bush01_deepnorth (5)	blackforest,meadows
-Bush01_deepnorth (6)	blackforest,meadows
-Bush01_deepnorth (7)	blackforest,meadows
-Bush01_heath	blackforest,meadows
-Bush02_en	blackforest,meadows
-Carrot	plains
-CarrotSeeds	plains
-CarrotSoup	plains
+Bush01	blackforest,meadows	hint
+Bush01 (1)	blackforest,meadows	hint
+Bush01_deepnorth	blackforest,meadows	hint
+Bush01_deepnorth (1)	blackforest,meadows	hint
+Bush01_deepnorth (2)	blackforest,meadows	hint
+Bush01_deepnorth (3)	blackforest,meadows	hint
+Bush01_deepnorth (4)	blackforest,meadows	hint
+Bush01_deepnorth (5)	blackforest,meadows	hint
+Bush01_deepnorth (6)	blackforest,meadows	hint
+Bush01_deepnorth (7)	blackforest,meadows	hint
+Bush01_heath	blackforest,meadows	hint
+Bush02_en	blackforest,meadows	hint
+Carrot	plains	hint
+CarrotSeeds	plains	hint
+CarrotSoup	plains	hint
 Charred Archer	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 Charred Melee	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 Charred Spawner	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
@@ -127,19 +127,19 @@ CharredTowerRuins3	ashlands
 CinderSky Ashrain	ashlands
 CinderSky CinderRain	ashlands
 CinderSky Storm	ashlands
-Cloudberry	plains
-CloudberryBush	plains
-CloudberryBush (1)	plains
-CloudberryBush (2)	plains
+Cloudberry	plains	hint
+CloudberryBush	plains	hint
+CloudberryBush (1)	plains	hint
+CloudberryBush (2)	plains	hint
 CombatRuin01	meadows
 Crypt2	blackforest
 Crypt3	blackforest
 Crypt4	blackforest
 DN_gammeltrollFrac01	deepnorth
 DN_gammeltrollFrac02	deepnorth
-Dandelion	blackforest,meadows,plains
+Dandelion	blackforest,meadows,plains	hint
 Dandelion Meadows	meadows
-Dandelion02	blackforest,meadows,plains
+Dandelion02	blackforest,meadows,plains	hint
 Dark Meadows	meadows
 Death Plains	plains
 Deathsquito	plains
@@ -166,62 +166,62 @@ FaderLocation	ashlands
 Fallen Valkyrie	ashlands
 Feastings	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 Fenring	mountain
-Fenring.001	mountain
-FenringArmorChest	mountain
-FenringArmorHood	mountain
-FenringArmorLegs	mountain
-FenringBoots	mountain
-FenringChest_folded	mountain
-FenringHood	mountain
-FenringHood_folded	mountain
-FenringIceNova_aoe	mountain
-FenringLeader	mountain
-FenringLegs_folded	mountain
-FenringPants	mountain
-Fenring_Cultist	mountain
-Fenring_Cultist_Hildir	mountain
-Fenring_Cultist_Hildir_nochest	mountain
-Fenring_Trophy	mountain
-Fenring_attack_IceNova	mountain
-Fenring_attack_claw	mountain
-Fenring_attack_fireclaw	mountain
-Fenring_attack_fireclaw_double	mountain
-Fenring_attack_flames	mountain
-Fenring_attack_flames_aoe	mountain
-Fenring_attack_frost	mountain
-Fenring_attack_frost_aoe	mountain
-Fenring_attack_iceclaw	mountain
-Fenring_attack_iceclaw_double	mountain
-Fenring_attack_jump	mountain
-Fenring_cultist_ragdoll	mountain
-Fenring_cultist_ragdoll_hildir	mountain
-Fenring_ragdoll	mountain
-Fenring_taunt	mountain
+Fenring.001	mountain	hint
+FenringArmorChest	mountain	hint
+FenringArmorHood	mountain	hint
+FenringArmorLegs	mountain	hint
+FenringBoots	mountain	hint
+FenringChest_folded	mountain	hint
+FenringHood	mountain	hint
+FenringHood_folded	mountain	hint
+FenringIceNova_aoe	mountain	hint
+FenringLeader	mountain	hint
+FenringLegs_folded	mountain	hint
+FenringPants	mountain	hint
+Fenring_Cultist	mountain	hint
+Fenring_Cultist_Hildir	mountain	hint
+Fenring_Cultist_Hildir_nochest	mountain	hint
+Fenring_Trophy	mountain	hint
+Fenring_attack_IceNova	mountain	hint
+Fenring_attack_claw	mountain	hint
+Fenring_attack_fireclaw	mountain	hint
+Fenring_attack_fireclaw_double	mountain	hint
+Fenring_attack_flames	mountain	hint
+Fenring_attack_flames_aoe	mountain	hint
+Fenring_attack_frost	mountain	hint
+Fenring_attack_frost_aoe	mountain	hint
+Fenring_attack_iceclaw	mountain	hint
+Fenring_attack_iceclaw_double	mountain	hint
+Fenring_attack_jump	mountain	hint
+Fenring_cultist_ragdoll	mountain	hint
+Fenring_cultist_ragdoll_hildir	mountain	hint
+Fenring_ragdoll	mountain	hint
+Fenring_taunt	mountain	hint
 Fimbulvinter - Elakingar	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 Fimbulvinter - Jotun Warriors	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 Fimbulvinter - Jotun Witches	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 Fimbulvinter - Meteors	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
-FirTree	blackforest,deepnorth
-FirTree (1)	blackforest,deepnorth
-FirTree_Big_log	blackforest,deepnorth
-FirTree_Big_plantable_Stub	blackforest,deepnorth
-FirTree_Sapling	blackforest,deepnorth
-FirTree_Snow_Stub	blackforest,deepnorth
-FirTree_Snow_log	blackforest,deepnorth
-FirTree_Snow_log_half	blackforest,deepnorth
-FirTree_Stub	blackforest,deepnorth
-FirTree_big	blackforest,deepnorth
-FirTree_big_Sapling	blackforest,deepnorth
-FirTree_big_log_half	blackforest,deepnorth
-FirTree_log	blackforest,deepnorth
-FirTree_log_half	blackforest,deepnorth
-FirTree_oldLog	blackforest,deepnorth
-FirTree_oldLog (1)	blackforest,deepnorth
-FirTree_oldLog (2)	blackforest,deepnorth
-FirTree_oldLog (3)	blackforest,deepnorth
-FirTree_oldLog_deepnorth	blackforest,deepnorth
-FirTree_small	blackforest,deepnorth
-FirTree_small_dead	blackforest,deepnorth
+FirTree	blackforest,deepnorth	hint
+FirTree (1)	blackforest,deepnorth	hint
+FirTree_Big_log	blackforest,deepnorth	hint
+FirTree_Big_plantable_Stub	blackforest,deepnorth	hint
+FirTree_Sapling	blackforest,deepnorth	hint
+FirTree_Snow_Stub	blackforest,deepnorth	hint
+FirTree_Snow_log	blackforest,deepnorth	hint
+FirTree_Snow_log_half	blackforest,deepnorth	hint
+FirTree_Stub	blackforest,deepnorth	hint
+FirTree_big	blackforest,deepnorth	hint
+FirTree_big_Sapling	blackforest,deepnorth	hint
+FirTree_big_log_half	blackforest,deepnorth	hint
+FirTree_log	blackforest,deepnorth	hint
+FirTree_log_half	blackforest,deepnorth	hint
+FirTree_oldLog	blackforest,deepnorth	hint
+FirTree_oldLog (1)	blackforest,deepnorth	hint
+FirTree_oldLog (2)	blackforest,deepnorth	hint
+FirTree_oldLog (3)	blackforest,deepnorth	hint
+FirTree_oldLog_deepnorth	blackforest,deepnorth	hint
+FirTree_small	blackforest,deepnorth	hint
+FirTree_small_dead	blackforest,deepnorth	hint
 FireFlies	blackforest
 FireHole	swamp
 Fish1	blackforest,meadows,plains
@@ -235,7 +235,7 @@ Fish6	swamp
 Fish7	plains
 Fish8	ocean
 Fish9	mistlands
-Flax	plains
+Flax	plains	hint
 Forest	blackforest,meadows
 Fortress Mountain	mountain
 FortressRuins	ashlands
@@ -283,7 +283,6 @@ Hildir_camp	meadows,swamp
 Hildir_cave	mountain
 Hildir_crypt	blackforest
 Hildir_plainsfortress	plains
-HugeStone1	plains
 Hugintest	meadows
 Hut Swamp	swamp
 InfestedTree01	swamp
@@ -301,7 +300,7 @@ Lingonberries	deepnorth
 Lox	plains
 Lox Plains	plains
 Lumbercamp	deepnorth
-Magecap	mistlands
+Magecap	mistlands	hint
 Marsh draugr	swamp
 Marsh ormbunke	swamp
 Marsh surtling	swamp
@@ -351,75 +350,75 @@ Necks	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swa
 NorthMemorialPlace	deepnorth
 NorthVillage	deepnorth
 ODIN	blackforest,meadows,plains,swamp
-Oak	meadows,plains
-Oak (1)	meadows,plains
-Oak (2)	meadows,plains
-Oak (3)	meadows,plains
-Oak (4)	meadows,plains
-Oak1	meadows,plains
-OakStub	meadows,plains
-Oak_Sapling	meadows,plains
-Oak_Sapling001	meadows,plains
-Oak_log	meadows,plains
-Oak_log_half	meadows,plains
-Obsidian	mountain
-ObsidianShard	mountain
-Onion	plains
-OnionSeeds	plains
-OnionSoup	plains
+Oak	meadows,plains	hint
+Oak (1)	meadows,plains	hint
+Oak (2)	meadows,plains	hint
+Oak (3)	meadows,plains	hint
+Oak (4)	meadows,plains	hint
+Oak1	meadows,plains	hint
+OakStub	meadows,plains	hint
+Oak_Sapling	meadows,plains	hint
+Oak_Sapling001	meadows,plains	hint
+Oak_log	meadows,plains	hint
+Oak_log_half	meadows,plains	hint
+Obsidian	mountain	hint
+ObsidianShard	mountain	hint
+Onion	plains	hint
+OnionSeeds	plains	hint
+OnionSoup	plains	hint
 Peaceful Meadows	meadows
 Pillar1	blackforest
 Pillar2	blackforest
-PineTree	blackforest,deepnorth
-PineTree_Sapling	blackforest,deepnorth
-PineTree_Snow_log	blackforest,deepnorth
-PineTree_Snow_log_XL	blackforest,deepnorth
-PineTree_Snow_log_XL_half	blackforest,deepnorth
-PineTree_Snow_log_half	blackforest,deepnorth
-PineTree_Snow_log_half_frost_troll	blackforest,deepnorth
-PineTree_log	blackforest,deepnorth
-PineTree_log (1)	blackforest,deepnorth
-PineTree_log (3)	blackforest,deepnorth
-PineTree_log (8)	blackforest,deepnorth
-PineTree_log (9)	blackforest,deepnorth
-PineTree_logOLD	blackforest,deepnorth
-PineTree_log_half	blackforest,deepnorth
-PineTree_log_halfOLD	blackforest,deepnorth
-PineTree_snowfall	blackforest,deepnorth
+PineTree	blackforest,deepnorth	hint
+PineTree_Sapling	blackforest,deepnorth	hint
+PineTree_Snow_log	blackforest,deepnorth	hint
+PineTree_Snow_log_XL	blackforest,deepnorth	hint
+PineTree_Snow_log_XL_half	blackforest,deepnorth	hint
+PineTree_Snow_log_half	blackforest,deepnorth	hint
+PineTree_Snow_log_half_frost_troll	blackforest,deepnorth	hint
+PineTree_log	blackforest,deepnorth	hint
+PineTree_log (1)	blackforest,deepnorth	hint
+PineTree_log (3)	blackforest,deepnorth	hint
+PineTree_log (8)	blackforest,deepnorth	hint
+PineTree_log (9)	blackforest,deepnorth	hint
+PineTree_logOLD	blackforest,deepnorth	hint
+PineTree_log_half	blackforest,deepnorth	hint
+PineTree_log_halfOLD	blackforest,deepnorth	hint
+PineTree_snowfall	blackforest,deepnorth	hint
 Pinetree Black Forest	blackforest
-Pinetree_01	blackforest,deepnorth
-Pinetree_01_Stub	blackforest,deepnorth
+Pinetree_01	blackforest,deepnorth	hint
+Pinetree_01_Stub	blackforest,deepnorth	hint
 Pinetree_01_blackforest	blackforest
-Pinetree_01_lod_02	blackforest,deepnorth
+Pinetree_01_lod_02	blackforest,deepnorth	hint
 Pinetree_01_mistlands	mistlands
-Pinetree_Snow	blackforest,deepnorth
-Pinetree_Snow_Stub	blackforest,deepnorth
-Pinetree_Snow_dead	blackforest,deepnorth
-Pinetree_Snow_dead (1)	blackforest,deepnorth
-Pinetree_Snow_dead (10)	blackforest,deepnorth
-Pinetree_Snow_dead (11)	blackforest,deepnorth
-Pinetree_Snow_dead (12)	blackforest,deepnorth
-Pinetree_Snow_dead (13)	blackforest,deepnorth
-Pinetree_Snow_dead (14)	blackforest,deepnorth
-Pinetree_Snow_dead (2)	blackforest,deepnorth
-Pinetree_Snow_dead (3)	blackforest,deepnorth
-Pinetree_Snow_dead (4)	blackforest,deepnorth
-Pinetree_Snow_dead (5)	blackforest,deepnorth
-Pinetree_Snow_dead (6)	blackforest,deepnorth
-Pinetree_Snow_dead (7)	blackforest,deepnorth
-Pinetree_Snow_dead (8)	blackforest,deepnorth
-Pinetree_Snow_dead (9)	blackforest,deepnorth
+Pinetree_Snow	blackforest,deepnorth	hint
+Pinetree_Snow_Stub	blackforest,deepnorth	hint
+Pinetree_Snow_dead	blackforest,deepnorth	hint
+Pinetree_Snow_dead (1)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (10)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (11)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (12)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (13)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (14)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (2)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (3)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (4)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (5)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (6)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (7)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (8)	blackforest,deepnorth	hint
+Pinetree_Snow_dead (9)	blackforest,deepnorth	hint
 PlaceofMystery1	ashlands
 PlaceofMystery2	ashlands
 PlaceofMystery3	ashlands
-Raspberry	blackforest,meadows
+Raspberry	blackforest,meadows	hint
 Raspberry Meadows	meadows
-RaspberryBush	blackforest,meadows
-RaspberryBush (1)	blackforest,meadows
-RaspberryBush (2)	blackforest,meadows
-RaspberryBush (3)	blackforest,meadows
-RaspberryBush (4)	blackforest,meadows
-RaspberryBush (5)	blackforest,meadows
+RaspberryBush	blackforest,meadows	hint
+RaspberryBush (1)	blackforest,meadows	hint
+RaspberryBush (2)	blackforest,meadows	hint
+RaspberryBush (3)	blackforest,meadows	hint
+RaspberryBush (4)	blackforest,meadows	hint
+RaspberryBush (5)	blackforest,meadows	hint
 Rock Black Forest	blackforest
 Rockless Mistlands	mistlands
 Root	blackforest
@@ -458,7 +457,7 @@ ShipWreck03	blackforest,ocean,plains,swamp
 ShipWreck04	blackforest,ocean,plains,swamp
 Shipwreck02_DN	deepnorth
 Shipwreck_DN	deepnorth
-SilverOre	mountain
+SilverOre	mountain	hint
 Skeleton	blackforest,meadows,mountain,plains,swamp
 Skeleton_meadows	meadows
 Skeleton_plains	plains
@@ -521,8 +520,8 @@ Swords Mistlands	mistlands
 TarPit1	deepnorth,plains
 TarPit2	plains
 TarPit3	plains
-Thistle	blackforest,meadows,plains
-ThistleGarland	blackforest,meadows,plains
+Thistle	blackforest,meadows,plains	hint
+ThistleGarland	blackforest,meadows,plains	hint
 Tick defeated queen other biomes	mistlands
 Trees Mistlands	mistlands
 Troll	blackforest
@@ -530,10 +529,10 @@ Troll Black Forest	blackforest
 TrollCave	blackforest
 TrollCave02	blackforest
 Trolls	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
-Turnip	plains
-TurnipHalloween	plains
-TurnipSeeds	plains
-TurnipStew	plains
+Turnip	plains	hint
+TurnipHalloween	plains	hint
+TurnipSeeds	plains	hint
+TurnipStew	plains	hint
 Twilight_Clear	deepnorth
 Twilight_Snow	deepnorth
 Twilight_SnowStorm	deepnorth
@@ -541,26 +540,25 @@ Twitchers	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains
 Unbjorn	plains
 UnstableLavaRock	ashlands
 Vendor_BlackForest	blackforest
-VineAsh	ashlands
-VineAsh (1)	ashlands
-VineAsh (2)	ashlands
-VineAsh (3)	ashlands
-VineAsh (4)	ashlands
-VineAsh (5)	ashlands
-VineAsh (6)	ashlands
-VineAsh (7)	ashlands
-VineAsh (8)	ashlands
-VineAsh_sapling	ashlands
-VineAsh_sapling (1)	ashlands
-VineGreen	mistlands
-VineGreenSeeds	mistlands
-VineGreen_sapling	mistlands
-VineGreen_sapling (1)	mistlands
+VineAsh	ashlands	hint
+VineAsh (1)	ashlands	hint
+VineAsh (2)	ashlands	hint
+VineAsh (3)	ashlands	hint
+VineAsh (4)	ashlands	hint
+VineAsh (5)	ashlands	hint
+VineAsh (6)	ashlands	hint
+VineAsh (7)	ashlands	hint
+VineAsh (8)	ashlands	hint
+VineAsh_sapling	ashlands	hint
+VineAsh_sapling (1)	ashlands	hint
+VineGreen	mistlands	hint
+VineGreenSeeds	mistlands	hint
+VineGreen_sapling	mistlands	hint
+VineGreen_sapling (1)	mistlands	hint
 Volture	ashlands
 VoltureNest	ashlands
 Waymarker01	mountain
 Waymarker02	mountain
-Waystone	meadows,plains
 Wolf	mountain
 Wolf Mountain	mountain
 WoodFarm1	meadows
@@ -589,11 +587,11 @@ YggaShoot4	mistlands
 YggaShoot_small1	mistlands
 YggaShoot_small2	mistlands
 YggaShoot_small3	mistlands
-YggdrasilBranch	mistlands
-YggdrasilPorridge	mistlands
-YggdrasilRoot	mistlands
-YggdrasilSap	mistlands
-YggdrasilWood	mistlands
+YggdrasilBranch	mistlands	hint
+YggdrasilPorridge	mistlands	hint
+YggdrasilRoot	mistlands	hint
+YggdrasilSap	mistlands	hint
+YggdrasilWood	mistlands	hint
 _SpawnList_DeepNorth	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 _SpawnList_ashlands	ashlands,blackforest,meadows,mountain,plains,swamp
 _SpawnList_base	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
@@ -744,7 +742,6 @@ ice1_deepnorth	deepnorth
 ice_rock1_deepnorth	deepnorth
 icepond	deepnorth
 icerock	deepnorth
-instanced_small_rock1	ashlands,blackforest,deepnorth,meadows,mistlands,mountain,ocean,plains,swamp
 lantern	deepnorth
 large_bones	mistlands,plains,swamp
 large_bones_half01	mistlands,plains,swamp
@@ -766,7 +763,6 @@ mushroom_magecap	mistlands
 oak1_meadows	meadows
 oak2_meadows	meadows
 oldLog	deepnorth
-ormbunke_green_medium	meadows
 ormbunke_meadows	meadows
 pickable_barley_heath	plains
 pickable_bog_swamp	swamp
@@ -840,7 +836,6 @@ rock_4_mistlands	mistlands
 rock_4_plains	plains
 rock_4_swamp	swamp
 rock_7_meadows	meadows,plains
-rock_a	plains
 rock_a_heath	plains
 rock_ashlands1	ashlands
 rock_ashlands2	ashlands

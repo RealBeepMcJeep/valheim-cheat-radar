@@ -230,12 +230,17 @@ There is no biome estimate, and nothing stores per-cell prefab composition.
       share; otherwise leave it uncoloured — undeveloped, ocean and unexplored cells stay blank rather
       than be guessed. Implemented as `biome_verdict`; a cell popup with the counts behind the verdict
       is still to come with the UI work.
-- [ ] Tune the flora hints against real saves: after adding them, coverage rose 40% → 54% and meadows
+- [x] Tune the flora hints against real saves: after adding them, coverage rose 40% → 54% and meadows
       went 158 → 1,291 cells (the skew is fixed), but **mountain fell 412 → 181**. Cause: with trees now
       voting in every forested cell and a two-biome hint weighting 6, tree votes can outvote sparse
-      single-biome mountain markers (silver, obsidian, wolf, drake). Options: split Fir/Pine hints per
-      variant, or ignore hint-derived votes in cells that already hold a strong single-biome game tag.
-- [ ] Render biome fill plus density shading with a view control (Biome / Density / Both) and a legend,
+      single-biome mountain markers (silver, obsidian, wolf, drake). Fixed by marking flora-hint entries
+      in `prefab_biomes.txt` (trailing `hint` column) and preferring a verdict reached from real,
+      game-tagged evidence alone whenever it clears the bar on its own (`biome_verdict_preferring_real`
+      in `src/lib.rs`); hint votes only fill a cell in when real evidence is too thin to decide. Measured
+      on the owner's real saves (19 archives, `C:\Users\user\Downloads\valheim-backups2`): mountain
+      188 → 436 (recovers past the pre-hint 412), coverage still rose 54% → 58% (swamp and plains also
+      recovered — same dilution hit their sparse real markers).
+- [x] Render biome fill plus density shading with a view control (Biome / Density / Both) and a legend,
       with one colour per biome (meadow green, black forest darker green, mountain white/grey, plains
       tan, swamp murky green, ashlands dark red, mistlands purple-grey, ocean deep blue).
 

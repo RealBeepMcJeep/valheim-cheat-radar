@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- Mountain (and other real-marker) biome undercount: `prefab_biomes.txt` now marks flora-hint entries
+  (trees the game's own tables never resolve) with a trailing `hint` column, and a cell's biome verdict
+  is decided from real, game-tagged evidence alone whenever that alone clears the evidence bar — dense
+  tree-hint votes only fill in a cell when real evidence is too thin to decide. On the owner's real
+  saves this took mountain from 188 to 436 coloured cells (was 412 before the flora-hint feature, so
+  this recovers and then some) while overall coverage still rose, 54% to 58% of populated cells.
+
 ### Added
 
 - Biome inference from content for the map: every ZDO whose prefab the game tags with a biome votes

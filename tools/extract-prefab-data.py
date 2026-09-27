@@ -7,7 +7,11 @@ committed:
 
     prefab_names.txt    one prefab name per line (the scanner hashes each name the same way the game
                         does, so a save's prefab hashes can be resolved to names)
-    prefab_biomes.txt   "<prefab name><TAB><biome>[,<biome>...]" sorted by prefab
+    prefab_biomes.txt   "<prefab name><TAB><biome>[,<biome>...][<TAB>hint]" sorted by prefab. The
+                        trailing "hint" column marks a name the game's own tables never resolved,
+                        filled in by `apply_flora_hints` below; the scanner trusts these only when
+                        the game-tagged evidence in a cell is too thin to stand on its own (see
+                        `biome_verdict_preferring_real` in `src/lib.rs`).
 
 Where the information lives (verified 2026-09-23; summarised in README.md, format notes in FORMAT.md):
 
@@ -96,18 +100,22 @@ FLORA_HINTS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 )
 
 
-def apply_flora_hints(names: set[str], table: dict[str, set[str]]) -> int:
-    """Fill in flora the game's tables cannot resolve, without ever overriding real data."""
-    added = 0
+def apply_flora_hints(names: set[str], table: dict[str, set[str]]) -> set[str]:
+    """Fill in flora the game's tables cannot resolve, without ever overriding real data.
+
+    Returns the set of names it filled in, so callers can mark them as heuristic rather than
+    game-tagged (see the "hint" column in `prefab_biomes.txt`).
+    """
+    hinted: set[str] = set()
     for name in names:
         if name in table:
             continue
         for prefixes, biomes in FLORA_HINTS:
             if name.startswith(prefixes):
                 table[name] = set(biomes)
-                added += 1
+                hinted.add(name)
                 break
-    return added
+    return hinted
 
 
 def read_tree(obj) -> dict | None:
@@ -479,7 +487,7 @@ def main() -> int:
     hinted = apply_flora_hints(all_names, all_biomes)
     tagged = {name: sorted(biome) for name, biome in all_biomes.items() if biome}
     if hinted:
-        print(f"flora hints filled in {hinted} names the game's tables could not resolve")
+        print(f"flora hints filled in {len(hinted)} names the game's tables could not resolve")
     out = Path(args.out_dir)
     with contextlib.suppress(OSError):
         out.mkdir(parents=True, exist_ok=True)
@@ -488,10 +496,15 @@ def main() -> int:
         + "".join(f"{name}\n" for name in sorted(all_names)),
         encoding="utf-8",
     )
+
+    def biome_line(name: str, biome: list[str]) -> str:
+        suffix = "\thint" if name in hinted else ""
+        return f"{name}\t{','.join(biome)}{suffix}\n"
+
     (out / "prefab_biomes.txt").write_text(
-        "# <prefab name><TAB><biome>[,<biome>...] — extracted from the game's bundles by\n"
-        "# tools/extract-prefab-data.py. Cells are coloured from these; see README.md.\n"
-        + "".join(f"{name}\t{','.join(biome)}\n" for name, biome in sorted(tagged.items())),
+        "# <prefab name><TAB><biome>[,<biome>...][<TAB>hint] — extracted from the game's bundles by\n"
+        "# tools/extract-prefab-data.py. Cells are coloured from these; see README.md and FORMAT.md.\n"
+        + "".join(biome_line(name, biome) for name, biome in sorted(tagged.items())),
         encoding="utf-8",
     )
     print(

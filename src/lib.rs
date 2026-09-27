@@ -217,6 +217,9 @@ pub struct PrefabNames {
     indexed_item_data: HashMap<i32, usize>,
     /// Prefab hash -> biome bitmask, from the game's own data (see `prefab_biomes.txt`).
     biomes: HashMap<i32, u16>,
+    /// Hashes whose biome mask came from a name-prefix heuristic (the "hint" column), not from a
+    /// biome-tagged component the game itself carries. See `biome_verdict_preferring_real`.
+    hinted: std::collections::HashSet<i32>,
 }
 
 impl PrefabNames {
@@ -234,20 +237,30 @@ impl PrefabNames {
             names,
             indexed_item_data,
             biomes: HashMap::new(),
+            hinted: std::collections::HashSet::new(),
         }
     }
 
-    /// Attach the generated prefab -> biome table: `<prefab name><TAB><biome>[,<biome>...]`.
-    /// Unknown biome names are ignored rather than guessed, so a stale table degrades to "no colour".
+    /// Attach the generated prefab -> biome table:
+    /// `<prefab name><TAB><biome>[,<biome>...][<TAB>hint]`. Unknown biome names are ignored rather
+    /// than guessed, so a stale table degrades to "no colour". A trailing `hint` column marks a name
+    /// the game's own data never tagged, filled in by a prefix heuristic (see
+    /// `tools/extract-prefab-data.py`); those votes are trusted only when game-tagged evidence in the
+    /// same cell is too thin to stand on its own (`biome_verdict_preferring_real`).
     pub fn with_biome_text(mut self, text: &str) -> Self {
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((name, biomes)) = line.split_once('\t') else {
+            let mut fields = line.split('\t');
+            let Some(name) = fields.next() else {
                 continue;
             };
+            let Some(biomes) = fields.next() else {
+                continue;
+            };
+            let hinted = fields.next().map(str::trim) == Some("hint");
             let mut mask = 0u16;
             for biome in biomes.split(',') {
                 if let Some((bit, _)) = BIOMES.iter().find(|(_, known)| *known == biome.trim()) {
@@ -255,7 +268,11 @@ impl PrefabNames {
                 }
             }
             if mask != 0 {
-                self.biomes.insert(stable_hash(name.trim()), mask);
+                let hash = stable_hash(name.trim());
+                self.biomes.insert(hash, mask);
+                if hinted {
+                    self.hinted.insert(hash);
+                }
             }
         }
         self
@@ -277,6 +294,16 @@ impl PrefabNames {
     /// Biome bitmask for a prefab hash; 0 when the prefab is unknown or carries no biome.
     pub fn biome_mask(&self, hash: i32) -> u16 {
         self.biomes.get(&hash).copied().unwrap_or(0)
+    }
+
+    /// Same as `biome_mask`, but 0 for a hash whose mask came from the flora-hint heuristic rather
+    /// than a biome-tagged component the game itself carries.
+    pub fn real_biome_mask(&self, hash: i32) -> u16 {
+        if self.hinted.contains(&hash) {
+            0
+        } else {
+            self.biome_mask(hash)
+        }
     }
 
     /// Number of prefabs in the biome table, for diagnostics.
@@ -1221,8 +1248,12 @@ pub struct ParseOutput {
     pub grid: HashMap<(i32, i32), u32>,
     /// ZDO count per owner prefab hash, for habitat/prefab context.
     pub prefabs: HashMap<i32, u32>,
-    /// Biome votes per world-map cell, from prefabs the game tags with a biome.
+    /// Biome votes per world-map cell, from prefabs the game tags with a biome (real tags plus
+    /// flora-hint heuristics).
     pub biomes: HashMap<(i32, i32), BiomeTally>,
+    /// Same tally restricted to real, game-tagged votes only (no flora hints). See
+    /// `biome_verdict_preferring_real`.
+    pub biomes_real: HashMap<(i32, i32), BiomeTally>,
 }
 
 /// Biome flag bits, matching the game's `Heightmap.Biome` enum (see FORMAT.md). The order fixes the
@@ -1254,6 +1285,15 @@ fn biome_weight(mask: u16) -> u32 {
     }
 }
 
+fn add_biome_votes(tally: &mut BiomeTally, mask: u16, weight: u32) {
+    tally[BIOME_TOTAL] = tally[BIOME_TOTAL].saturating_add(weight);
+    for (index, (bit, _)) in BIOMES.iter().enumerate() {
+        if mask & bit != 0 {
+            tally[index] = tally[index].saturating_add(weight);
+        }
+    }
+}
+
 /// A cell is coloured only with three single-biome objects' worth of weight and a 60% share of it;
 /// anything weaker stays uncoloured rather than guessed (undeveloped, ocean and unexplored cells).
 const BIOME_MIN_WEIGHT: u32 = 36;
@@ -1274,6 +1314,15 @@ fn biome_verdict(tally: &BiomeTally) -> Option<(usize, u32)> {
     }
     let share = votes * 100 / total;
     (share >= BIOME_MIN_SHARE_PERCENT).then_some((index, share))
+}
+
+/// Prefer a verdict reached from real, game-tagged evidence alone; fall back to the combined tally
+/// (real plus flora-hint votes) only when the real evidence in that cell is too thin to decide on its
+/// own. Without this, dense flora hints (every tree in a forested cell casts a vote) can outvote the
+/// naturally sparse single-biome markers a real biome like mountain relies on (ore, named monsters) in
+/// a cell that borders both.
+fn biome_verdict_preferring_real(real: &BiomeTally, combined: &BiomeTally) -> Option<(usize, u32)> {
+    biome_verdict(real).or_else(|| biome_verdict(combined))
 }
 
 /// World-map aggregation cell size in metres. 64 m matches a Valheim zone.
@@ -1298,15 +1347,19 @@ fn record_zdo_spatial(output: &mut ParseOutput, info: &ZdoInfo<'_>) {
             (p.z / MAP_CELL_METERS).floor() as i32,
         );
         *output.grid.entry(cell).or_default() += 1;
-        let weight = biome_weight(info.prefabs.biome_mask(info.owner_prefab_hash));
+        let mask = info.prefabs.biome_mask(info.owner_prefab_hash);
+        let weight = biome_weight(mask);
         if weight > 0 {
-            let tally = output.biomes.entry(cell).or_default();
-            tally[BIOME_TOTAL] = tally[BIOME_TOTAL].saturating_add(weight);
-            for (index, (bit, _)) in BIOMES.iter().enumerate() {
-                if info.prefabs.biome_mask(info.owner_prefab_hash) & bit != 0 {
-                    tally[index] = tally[index].saturating_add(weight);
-                }
-            }
+            add_biome_votes(output.biomes.entry(cell).or_default(), mask, weight);
+        }
+        let real_mask = info.prefabs.real_biome_mask(info.owner_prefab_hash);
+        let real_weight = biome_weight(real_mask);
+        if real_weight > 0 {
+            add_biome_votes(
+                output.biomes_real.entry(cell).or_default(),
+                real_mask,
+                real_weight,
+            );
         }
     }
     *output.prefabs.entry(info.owner_prefab_hash).or_default() += 1;
@@ -1977,6 +2030,8 @@ pub struct ArchiveScan {
     pub prefabs: HashMap<i32, u32>,
     /// Biome votes per 64 m world cell, tallied while parsing (see `record_zdo_spatial`).
     pub biomes: HashMap<(i32, i32), BiomeTally>,
+    /// Same tally restricted to real, game-tagged votes (no flora hints).
+    pub biomes_real: HashMap<(i32, i32), BiomeTally>,
     /// `.fwl2`/`.db2` world metadata. Player ids and character names are never recorded here.
     pub world: WorldMeta,
     pub world_metadata_error: Option<String>,
@@ -1997,6 +2052,12 @@ fn merge_parse(archive: &mut ArchiveScan, output: ParseOutput) {
     }
     for (cell, tally) in output.biomes {
         let target = archive.biomes.entry(cell).or_default();
+        for (slot, value) in tally.iter().enumerate() {
+            target[slot] = target[slot].saturating_add(*value);
+        }
+    }
+    for (cell, tally) in output.biomes_real {
+        let target = archive.biomes_real.entry(cell).or_default();
         for (slot, value) in tally.iter().enumerate() {
             target[slot] = target[slot].saturating_add(*value);
         }
@@ -3294,8 +3355,10 @@ fn report_markdown_with_characters(
         if !latest.biomes.is_empty() {
             let mut histogram = [0usize; BIOME_COUNT];
             let mut coloured = 0usize;
-            for tally in latest.biomes.values() {
-                if let Some((index, _)) = biome_verdict(tally) {
+            let empty_real = BiomeTally::default();
+            for (cell, tally) in &latest.biomes {
+                let real = latest.biomes_real.get(cell).unwrap_or(&empty_real);
+                if let Some((index, _)) = biome_verdict_preferring_real(real, tally) {
                     histogram[index] += 1;
                     coloured += 1;
                 }
@@ -3744,10 +3807,14 @@ fn browser_map_json(archives: &[ArchiveScan]) -> String {
         .join(",");
     // Biome layer: only cells whose evidence clears the threshold, so undeveloped, ocean and
     // unexplored ground stays blank instead of being guessed.
+    let empty_real = BiomeTally::default();
     let mut biome_cells = latest
         .biomes
         .iter()
-        .filter_map(|(cell, tally)| biome_verdict(tally).map(|(index, _)| (*cell, index)))
+        .filter_map(|(cell, tally)| {
+            let real = latest.biomes_real.get(cell).unwrap_or(&empty_real);
+            biome_verdict_preferring_real(real, tally).map(|(index, _)| (*cell, index))
+        })
         .collect::<Vec<_>>();
     biome_cells.sort_by_key(|((x, z), _)| (*x, *z));
     let biome_body = biome_cells
@@ -5387,6 +5454,45 @@ mod tests {
         assert_eq!(biome_verdict(&tally(&[(0, 48), (2, 24)])), Some((0, 66)));
         // Nothing at all stays blank.
         assert_eq!(biome_verdict(&tally(&[])), None);
+    }
+
+    #[test]
+    fn hint_column_marks_a_prefab_as_heuristic_not_real() {
+        let prefabs = PrefabNames::from_text("Wolf\nFirTree\n")
+            .with_biome_text("Wolf\tmountain\nFirTree\tblackforest,deepnorth\thint\n");
+        assert_eq!(prefabs.biome_mask(stable_hash("Wolf")), 0x04);
+        assert_eq!(prefabs.real_biome_mask(stable_hash("Wolf")), 0x04);
+        // The hint column keeps the combined mask (still used for weighting and colouring)...
+        assert_eq!(prefabs.biome_mask(stable_hash("FirTree")), 0x08 | 0x40);
+        // ...but drops out of the real-only mask, so it can never win a cell on its own.
+        assert_eq!(prefabs.real_biome_mask(stable_hash("FirTree")), 0);
+    }
+
+    #[test]
+    fn real_evidence_wins_over_denser_hint_votes_in_a_mixed_cell() {
+        let mut real = [0u32; BIOME_COUNT + 1];
+        let mut combined = [0u32; BIOME_COUNT + 1];
+        // Three real single-biome mountain objects (weight 12 each): a sparse but decisive signal.
+        real[2] = 36;
+        real[BIOME_TOTAL] = 36;
+        combined[2] = 36;
+        // A flood of hint-derived two-biome tree votes (weight 6 each) for blackforest, denser than
+        // the mountain evidence and enough to swamp it in the combined tally alone.
+        combined[3] = 120;
+        combined[BIOME_TOTAL] = 36 + 120;
+        // The combined tally alone would call this blackforest (120 of 156 = 76%).
+        assert_eq!(biome_verdict(&combined), Some((3, 76)));
+        // But real evidence alone already clears the bar for mountain, so it wins outright.
+        assert_eq!(
+            biome_verdict_preferring_real(&real, &combined),
+            Some((2, 100))
+        );
+        // A cell with no real evidence at all still falls back to the combined (hint) tally.
+        let no_real = [0u32; BIOME_COUNT + 1];
+        assert_eq!(
+            biome_verdict_preferring_real(&no_real, &combined),
+            Some((3, 76))
+        );
     }
 
     #[test]
