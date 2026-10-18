@@ -32,6 +32,8 @@ export type Evidence = {
   crafter_name: string | null;
   world_level: number | null;
   custom_data_keys: string[];
+  /** 2 = a flag Valheim 1.0.20+ honours; 1 = an older flag it ignores; null = no revision. */
+  cheat_revision?: number | null;
 };
 
 export type Archive = {
@@ -57,7 +59,7 @@ export type Archive = {
   global_keys?: { key: string; value: number | null }[];
   world_metadata_error?: string | null;
   /** The dedicated server's own rotating world backups inside this archive; not scanned. */
-  auto_backups?: string[];
+  world_backups?: string[];
 };
 
 export type Character = {

@@ -39,7 +39,7 @@ describe('summarizeScrub', () => {
   });
 });
 
-describe('summarizeScrub with automatic backups', () => {
+describe('summarizeScrub with world backups', () => {
   it('counts only the live world and lists the backups changed alongside it', () => {
     const live = (action: ScrubAuditAction['action']) => ({ ...row(action, 'Wood'), file: 'worlds_local/Dedicated/1.chunk' });
     const copy = (action: ScrubAuditAction['action']) => ({ ...row(action, 'Wood'), file: 'worlds_local/Dedicated_backup_auto-20260927-121154/1.chunk' });
@@ -47,12 +47,12 @@ describe('summarizeScrub with automatic backups', () => {
       mode: 'delete-items',
       zdo_count_before: 5,
       zdo_count_after: 4,
-      auto_backups: ['Dedicated_backup_auto-20260927-121154'],
+      world_backups: ['Dedicated_backup_auto-20260927-121154'],
       actions: [live('delete_item'), copy('delete_item')],
     });
     expect(lines).toEqual([
       { label: 'Dropped items deleted', count: 1, examples: 'Wood' },
-      { label: "Server's automatic backups changed the same way", count: 1, examples: 'Dedicated_backup_auto-20260927-121154' },
+      { label: "The server's own world backups changed the same way", count: 1, examples: 'Dedicated_backup_auto-20260927-121154' },
     ]);
   });
 });

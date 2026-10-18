@@ -24,7 +24,7 @@ export type ScrubAuditAction = {
   item: string | null;
   contents: number;
 };
-export type ScrubAudit = { mode: ScrubMode; zdo_count_before: number; zdo_count_after: number; auto_backups?: string[]; actions: ScrubAuditAction[] };
+export type ScrubAudit = { mode: ScrubMode; zdo_count_before: number; zdo_count_after: number; world_backups?: string[]; actions: ScrubAuditAction[] };
 export type ScrubSummaryLine = { label: string; count: number; examples: string };
 
 /** "stone_wall_4x2 ×117, wood_floor ×72, +12 more" */
@@ -38,10 +38,10 @@ function examples(names: (string | null)[], limit = 4): string {
 
 /**
  * What a prepared scrub did to the live world, grouped for a human, plus the consequences worth a
- * warning. The server's own automatic backups get the same changes and are summarized as one line.
+ * warning. The game's own world backups get the same changes and are summarized as one line.
  */
 export function summarizeScrub(audit: ScrubAudit): { lines: ScrubSummaryLine[]; warnings: string[] } {
-  const live = audit.actions.filter((row) => !row.file.includes('_backup_auto-'));
+  const live = audit.actions.filter((row) => !row.file.includes('_backup_'));
   const of = (action: ScrubAuditAction['action']) => live.filter((row) => row.action === action);
   const lines: ScrubSummaryLine[] = [];
   const add = (label: string, rows: ScrubAuditAction[], name: (row: ScrubAuditAction) => string | null) => {
@@ -55,9 +55,9 @@ export function summarizeScrub(audit: ScrubAudit): { lines: ScrubSummaryLine[]; 
   for (const category of CATEGORY_ORDER) {
     add(`Destroyed: ${CATEGORY_LABELS[category].toLowerCase()}`, destroyed.filter((row) => classifyPrefab(row.prefab ?? '') === category), (row) => row.prefab);
   }
-  const backups = audit.auto_backups ?? [];
+  const backups = audit.world_backups ?? [];
   if (backups.length) {
-    lines.push({ label: "Server's automatic backups changed the same way", count: backups.length, examples: backups.join(', ') });
+    lines.push({ label: "The server's own world backups changed the same way", count: backups.length, examples: backups.join(', ') });
   }
 
   const warnings: string[] = [];

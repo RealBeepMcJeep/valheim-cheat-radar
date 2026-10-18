@@ -357,6 +357,8 @@ pub struct ItemEvidence {
     pub crafter_id: Option<i64>,
     pub crafter_name: Option<String>,
     pub custom_keys: Vec<String>,
+    /// Item data version (106/107/109/110).
+    pub version: u8,
     /// Byte offset of this item's trailing cheated-flag byte, relative to the start of the byte
     /// slice this item was decoded from. `None` only when the item's format has no such byte
     /// (never the case here: an `ItemEvidence` only exists because that byte's bit 0 was set).
@@ -547,7 +549,7 @@ struct ItemSummary {
 
 fn validate_item_version(version: i32, _allow_legacy_106: bool) -> Result<u8, ScanError> {
     match version {
-        106 | 107 | 109 => Ok(version as u8),
+        106 | 107 | 109 | 110 => Ok(version as u8),
         _ => Err(error(format!(
             "unsupported item/inventory version {version}"
         ))),
@@ -649,6 +651,7 @@ fn decode_item(
         crafter_id,
         crafter_name,
         custom_keys,
+        version,
         cheated_byte_offset: summary.cheated_byte_pos,
     }))
 }
@@ -1373,9 +1376,14 @@ pub struct Evidence {
     pub crafter_name: Option<String>,
     pub world_level: Option<u8>,
     pub custom_keys: Vec<String>,
+    /// The cheat revision a flag belongs to. Valheim 1.0.20 only honours flags it writes itself: a
+    /// `cheated` value of 2 and the cheated bit of item data at version 110 or later. Older flags
+    /// (a `cheated` value of 1, older item data) are 1 and are ignored by 1.0.20 and later, though
+    /// they stay in the save. `None` where there is no revision (station queues).
+    pub cheat_revision: Option<u8>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct EvidenceCounts {
     decoded_item_count: u64,
     item_count: u64,
@@ -1386,7 +1394,7 @@ struct EvidenceCounts {
     station_queued_cheated_count: u64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ParseOutput {
     pub zdo_count: u64,
     pub evidence: Vec<Evidence>,
@@ -1577,6 +1585,7 @@ fn make_evidence(info: &ZdoInfo<'_>, key_hash: i32, key_name: String, kind: &str
         crafter_name: None,
         world_level: None,
         custom_keys: Vec::new(),
+        cheat_revision: None,
     }
 }
 
@@ -1602,6 +1611,7 @@ fn add_item_hits(
         evidence.crafter_name = item.crafter_name;
         evidence.world_level = Some(item.world_level);
         evidence.custom_keys = item.custom_keys;
+        evidence.cheat_revision = Some(if item.version >= 110 { 2 } else { 1 });
         push_evidence(output, evidence);
     }
 }
@@ -1785,10 +1795,9 @@ fn parse_zdo<R: Read>(
                     old_value: value as i64,
                     new_value: 0,
                 });
-                push_evidence(
-                    output,
-                    make_evidence(&info, key, "cheated".to_string(), "zdo_cheated"),
-                );
+                let mut evidence = make_evidence(&info, key, "cheated".to_string(), "zdo_cheated");
+                evidence.cheat_revision = Some(if value == 2 { 2 } else { 1 });
+                push_evidence(output, evidence);
             } else if key == CHEATED_QUEUED || (key > CHEATED_QUEUED && key <= CHEATED_QUEUED + 32)
             {
                 let key_name = if key == CHEATED_QUEUED {
@@ -1984,9 +1993,9 @@ fn parse_chunk_reader<R: Read>(
     let mut reader = CountingReader::new(reader);
     let reader = &mut reader;
     let version = read_i16(reader)?;
-    if version != 41 {
+    if !matches!(version, 41 | 42) {
         return Err(error(format!(
-            "expected current chunk version 41, found {version}"
+            "expected current chunk version 41 or 42, found {version}"
         )));
     }
     let count = read_i32(reader)?;
@@ -2155,20 +2164,66 @@ fn parse_chunks_metadata<R: Read>(reader: &mut R) -> Result<(i16, i32, Vec<Chunk
 }
 
 struct EntryHeader {
-    path: [u8; 100],
+    /// Full path: a pax `path` or GNU long name when one precedes the entry, otherwise the ustar
+    /// prefix and name.
+    path: Vec<u8>,
+    /// Hardlink target (`linkname`, or a pax `linkpath` / GNU long link).
+    link: Vec<u8>,
     size: u64,
     kind: u8,
+    /// A pax or GNU extended header preceded this entry; it may carry a size of its own.
+    extended: bool,
 }
 
 impl EntryHeader {
     fn path(&self) -> &[u8] {
-        let end = self
-            .path
-            .iter()
-            .position(|byte| *byte == 0)
-            .unwrap_or(self.path.len());
-        &self.path[..end]
+        &self.path
     }
+}
+
+/// A NUL-terminated header field.
+fn tar_field(bytes: &[u8]) -> &[u8] {
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    &bytes[..end]
+}
+
+/// Bound on one pax or GNU long-name header body; real ones are a few hundred bytes.
+const MAX_TAR_EXTENDED_HEADER_BYTES: u64 = 1024 * 1024;
+
+/// `<length> <key>=<value>\n` records of a pax extended header.
+/// A pax record's key and value.
+type PaxRecord<'a> = (&'a [u8], &'a [u8]);
+
+fn parse_pax_records(data: &[u8]) -> Result<Vec<PaxRecord<'_>>, ScanError> {
+    let invalid = || error("invalid pax extended header");
+    let mut records = Vec::new();
+    let mut at = 0;
+    while at < data.len() && data[at] != 0 {
+        let space = at
+            + data[at..]
+                .iter()
+                .position(|byte| *byte == b' ')
+                .ok_or_else(invalid)?;
+        let length: usize = std::str::from_utf8(&data[at..space])
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .ok_or_else(invalid)?;
+        let end = at + length;
+        if end > data.len() || end <= space + 1 || data[end - 1] != b'\n' {
+            return Err(invalid());
+        }
+        let record = &data[space + 1..end - 1];
+        let equals = record
+            .iter()
+            .position(|byte| *byte == b'=')
+            .ok_or_else(invalid)?;
+        records.push((&record[..equals], &record[equals + 1..]));
+        at = end;
+    }
+    Ok(records)
 }
 
 struct LimitedReader<'a, R: Read> {
@@ -2194,9 +2249,18 @@ impl<R: Read> LimitedReader<'_, R> {
     }
 }
 
+/// Path, link and size an extended header set for the entry that follows it.
+#[derive(Default)]
+struct PendingTarFields {
+    path: Option<Vec<u8>>,
+    link: Option<Vec<u8>>,
+    size: Option<u64>,
+}
+
 struct TarStream<R: Read> {
     reader: R,
     ended: bool,
+    pending: Option<PendingTarFields>,
 }
 
 impl<R: Read> TarStream<R> {
@@ -2204,6 +2268,7 @@ impl<R: Read> TarStream<R> {
         Self {
             reader,
             ended: false,
+            pending: None,
         }
     }
 
@@ -2216,6 +2281,9 @@ impl<R: Read> TarStream<R> {
             .read_exact(&mut block)
             .map_err(|io_error| error(format!("truncated tar header: {io_error}")))?;
         if block.iter().all(|byte| *byte == 0) {
+            if self.pending.is_some() {
+                return Err(error("tar extended header is not followed by an entry"));
+            }
             let mut second = [0u8; 512];
             self.reader
                 .read_exact(&mut second)
@@ -2243,17 +2311,73 @@ impl<R: Read> TarStream<R> {
                 "tar header checksum mismatch: expected {stored_checksum}, calculated {actual_checksum}"
             )));
         }
-        let mut path = [0u8; 100];
-        path.copy_from_slice(&block[..100]);
+        let kind = block[156];
         let size = parse_tar_octal(&block[124..136])?;
+        if matches!(kind, b'x' | b'g' | b'L' | b'K') {
+            // An extended header describes the entry after it: read it, then that entry.
+            if size > MAX_TAR_EXTENDED_HEADER_BYTES {
+                return Err(error("tar extended header is too large"));
+            }
+            let mut data = vec![0u8; size as usize];
+            self.reader
+                .read_exact(&mut data)
+                .map_err(|io_error| error(format!("truncated tar extended header: {io_error}")))?;
+            skip_bytes(&mut self.reader, (512 - (size % 512)) % 512)?;
+            let pending = self.pending.get_or_insert_with(Default::default);
+            match kind {
+                b'x' => {
+                    for (key, value) in parse_pax_records(&data)? {
+                        match key {
+                            b"path" => pending.path = Some(value.to_vec()),
+                            b"linkpath" => pending.link = Some(value.to_vec()),
+                            b"size" => {
+                                pending.size = Some(
+                                    std::str::from_utf8(value)
+                                        .ok()
+                                        .and_then(|text| text.parse().ok())
+                                        .ok_or_else(|| error("invalid pax size"))?,
+                                )
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                b'L' => pending.path = Some(tar_field(&data).to_vec()),
+                b'K' => pending.link = Some(tar_field(&data).to_vec()),
+                // A global header applies to everything after it; none of its keys are used here.
+                _ => {}
+            }
+            return self.next_header();
+        }
+        let mut path = tar_field(&block[..100]).to_vec();
+        let prefix = tar_field(&block[345..500]);
+        if &block[257..263] == b"ustar\0" && !prefix.is_empty() {
+            path = [prefix, b"/", &path].concat();
+        }
+        let pending = self.pending.take();
+        let extended = pending.is_some();
+        let pending = pending.unwrap_or_default();
         Ok(Some(EntryHeader {
-            path,
-            size,
-            kind: block[156],
+            path: pending.path.unwrap_or(path),
+            link: pending
+                .link
+                .unwrap_or_else(|| tar_field(&block[157..257]).to_vec()),
+            size: pending.size.unwrap_or(size),
+            kind,
+            extended,
         }))
     }
 
-    fn for_each_entry<F>(&mut self, mut callback: F) -> Result<(), ScanError>
+    /// Calls `callback` for every regular file.
+    fn for_each_entry<F>(&mut self, callback: F) -> Result<(), ScanError>
+    where
+        F: FnMut(&EntryHeader, &mut LimitedReader<'_, R>) -> Result<(), ScanError>,
+    {
+        self.for_each_entry_of(&[0, b'0'], callback)
+    }
+
+    /// Calls `callback` for every entry whose type is in `kinds`.
+    fn for_each_entry_of<F>(&mut self, kinds: &[u8], mut callback: F) -> Result<(), ScanError>
     where
         F: FnMut(&EntryHeader, &mut LimitedReader<'_, R>) -> Result<(), ScanError>,
     {
@@ -2262,7 +2386,7 @@ impl<R: Read> TarStream<R> {
                 reader: &mut self.reader,
                 remaining: header.size,
             };
-            if header.kind == 0 || header.kind == b'0' {
+            if kinds.contains(&header.kind) {
                 callback(&header, &mut body)?;
             }
             body.drain()?;
@@ -2339,9 +2463,9 @@ pub struct ArchiveScan {
     /// `.fwl2`/`.db2` world metadata. Player ids and character names are never recorded here.
     pub world: WorldMeta,
     pub world_metadata_error: Option<String>,
-    /// Folders of the dedicated server's own rotating world backups found in the archive
-    /// (`<world>_backup_auto-yyyyMMdd-HHmmss`). Older full copies of the world, not scanned.
-    pub auto_backups: Vec<String>,
+    /// Folders of the game's own world backups found in the archive (`<world>_backup_...`, e.g.
+    /// the rotating `_backup_auto-` copies). Full copies of the world, not scanned.
+    pub world_backups: Vec<String>,
 }
 
 fn merge_parse(archive: &mut ArchiveScan, output: ParseOutput) {
@@ -2616,26 +2740,283 @@ pub fn scan_tar_bytes(
     archive_name: &str,
     prefabs: &PrefabNames,
 ) -> Result<ArchiveScan, ScanError> {
-    let archive_name = archive_name.to_string();
-    let snapshot = snapshot_id(&archive_name);
+    let mut builder = ArchiveBuilder::new(archive_name.to_string(), snapshot_id(archive_name));
     let mut tar = TarStream::new(bytes);
-    let mut archive = ArchiveScan {
-        archive: archive_name.clone(),
-        snapshot: snapshot.clone(),
-        format: "metadata_only_incomplete".to_string(),
-        ..ArchiveScan::default()
-    };
-    let mut metadata = Vec::new();
     tar.for_each_entry(|header, body| {
-        let path_bytes = header.path();
         let internal_path =
-            std::str::from_utf8(path_bytes).map_err(|_| error("invalid tar path"))?;
+            std::str::from_utf8(header.path()).map_err(|_| error("invalid tar path"))?;
         validate_browser_tar_path(internal_path)?;
-        if path_bytes.ends_with(b"dathost_settings_backup.json") {
+        builder.file(internal_path, body, header.size, prefabs)
+    })?;
+    tar.reject_nonzero_trailing()?;
+    builder.finish(true)
+}
+
+/// One snapshot read from a vault (see `scan_vault_reader`).
+#[derive(Debug)]
+pub struct VaultSnapshot {
+    /// The snapshot's folder name in the vault, e.g. `2026-09-29-22-43-scrubbed`.
+    pub name: String,
+    /// An earlier snapshot whose every file is the same stored copy: one backup kept twice.
+    pub duplicate_of: Option<String>,
+    /// A `-scrubbed` copy made with this tool: a branch, not a point in the world's timeline.
+    pub scrubbed: bool,
+    pub scan: ArchiveScan,
+}
+
+/// Whether a file's bytes are needed again when a later snapshot links to it.
+fn vault_world_file(rel: &str) -> bool {
+    [".chunks", ".fwl2", ".db2"]
+        .iter()
+        .any(|extension| rel.ends_with(extension))
+}
+
+/// Reads a valheim-vault store entry by entry: one top-level folder per snapshot holding one host
+/// backup's files, where a file already stored earlier is a hardlink back to its first copy. Every
+/// stored chunk is parsed once; a hardlink reuses that parse, relabelled for the snapshot linking
+/// to it, so unchanged chunks are never parsed twice.
+struct VaultReader<'a> {
+    vault_name: String,
+    prefabs: &'a PrefabNames,
+    /// Parse of every stored `.chunk`, by vault path.
+    chunks: HashMap<String, ParseOutput>,
+    /// Bytes of every stored small world file (`.chunks`, `.fwl2`, `.db2`), by vault path.
+    files: HashMap<String, Vec<u8>>,
+    open: Option<(String, ArchiveBuilder, VaultFingerprint)>,
+    /// Finished snapshots with their fingerprints.
+    done: Vec<(VaultSnapshot, VaultFingerprint)>,
+}
+
+/// (path in the snapshot, vault path of the stored copy holding its bytes) for every file:
+/// two snapshots with the same fingerprint hold the same backup.
+type VaultFingerprint = Vec<(String, String)>;
+
+impl<'a> VaultReader<'a> {
+    fn new(vault_name: &str, prefabs: &'a PrefabNames) -> Self {
+        Self {
+            vault_name: vault_name.to_string(),
+            prefabs,
+            chunks: HashMap::new(),
+            files: HashMap::new(),
+            open: None,
+            done: Vec::new(),
+        }
+    }
+
+    /// One vault entry: a regular file (`kind` 0/'0', with `data`) or a hardlink ('1', to `link`).
+    fn entry(&mut self, path: &str, kind: u8, link: &str, data: &[u8]) -> Result<(), ScanError> {
+        if path == "_vault.json" || path.starts_with("_vault/") {
+            return Ok(()); // the vault's own index; everything needed is in the folders
+        }
+        let (snapshot, rel) = path
+            .split_once('/')
+            .ok_or_else(|| error(format!("vault entry outside a snapshot folder: {path}")))?;
+        if self.open.as_ref().map(|(name, _, _)| name.as_str()) != Some(snapshot) {
+            self.finish_open()?;
+            if self.done.iter().any(|(done, _)| done.name == snapshot) {
+                return Err(error(format!(
+                    "vault snapshot {snapshot} is not contiguous"
+                )));
+            }
+            let archive = format!("{}#{snapshot}", self.vault_name);
+            let builder = ArchiveBuilder::new(archive, snapshot.to_string());
+            self.open = Some((snapshot.to_string(), builder, Vec::new()));
+        }
+        let linked = kind == b'1';
+        let stored = if linked { link } else { path };
+        if !linked && rel.ends_with(".chunk") {
+            let output = parse_chunk_reader(
+                &mut &data[..],
+                data.len() as u64,
+                "",
+                "",
+                rel,
+                self.prefabs,
+                &[],
+                &mut ScrubSink::default(),
+            )?;
+            self.chunks.insert(path.to_string(), output);
+        } else if !linked && vault_world_file(rel) {
+            self.files.insert(path.to_string(), data.to_vec());
+        }
+        let (_, builder, fingerprint) = self.open.as_mut().expect("opened above");
+        fingerprint.push((rel.to_string(), stored.to_string()));
+        if rel.ends_with(".chunk") && backup_folder(rel).is_none() {
+            let output = self.chunks.get(stored).ok_or_else(|| {
+                error(format!(
+                    "{path}: links to {stored}, which is not a stored chunk"
+                ))
+            })?;
+            let (archive, snapshot) = (builder.archive.archive.clone(), snapshot.to_string());
+            builder.chunk(relabel_chunk(output.clone(), &archive, &snapshot, rel));
+        } else {
+            let bytes: &[u8] = match (linked, self.files.get(stored)) {
+                (false, _) => data,
+                (true, Some(bytes)) => bytes,
+                (true, None) if vault_world_file(rel) => {
+                    return Err(error(format!(
+                        "{path}: links to {stored}, which is not stored"
+                    )))
+                }
+                (true, None) => &[], // a file the scan ignores (admin lists, host settings, ...)
+            };
+            builder.file(rel, &mut &bytes[..], bytes.len() as u64, self.prefabs)?;
+        }
+        Ok(())
+    }
+
+    fn finish_open(&mut self) -> Result<(), ScanError> {
+        let Some((name, builder, mut fingerprint)) = self.open.take() else {
+            return Ok(());
+        };
+        fingerprint.sort();
+        let duplicate_of = self
+            .done
+            .iter()
+            .find(|(_, earlier)| *earlier == fingerprint)
+            .map(|(earlier, _)| earlier.name.clone());
+        let snapshot = VaultSnapshot {
+            scrubbed: name.contains("-scrubbed"),
+            name,
+            duplicate_of,
+            // A host backup taken before the world existed holds no world; the caller decides.
+            scan: builder.finish(false)?,
+        };
+        self.done.push((snapshot, fingerprint));
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Vec<VaultSnapshot>, ScanError> {
+        self.finish_open()?;
+        if self.done.is_empty() {
+            return Err(error("the vault holds no snapshots"));
+        }
+        Ok(self
+            .done
+            .into_iter()
+            .map(|(snapshot, _)| snapshot)
+            .collect())
+    }
+}
+
+/// A cached chunk parse, labelled as the given snapshot's copy of it.
+fn relabel_chunk(
+    mut output: ParseOutput,
+    archive: &str,
+    snapshot: &str,
+    internal_path: &str,
+) -> ParseOutput {
+    let name = internal_path.rsplit('/').next().unwrap_or(internal_path);
+    let size = parse_chunk_name(name).ok().map(|(size, _, _)| size);
+    for evidence in &mut output.evidence {
+        evidence.archive = archive.to_string();
+        evidence.snapshot = snapshot.to_string();
+        evidence.internal_path = internal_path.to_string();
+        evidence.chunk_filename = Some(name.to_string());
+        evidence.chunk_size = size;
+        evidence.chunk_revision = None;
+    }
+    output
+}
+
+/// Scans every snapshot of a decompressed vault stream (see `VaultReader`), in stream order.
+pub fn scan_vault_reader<R: Read>(
+    reader: R,
+    vault_name: &str,
+    prefabs: &PrefabNames,
+) -> Result<Vec<VaultSnapshot>, ScanError> {
+    let mut vault = VaultReader::new(vault_name, prefabs);
+    let mut tar = TarStream::new(reader);
+    tar.for_each_entry_of(&[0, b'0', b'1'], |header, body| {
+        let path = std::str::from_utf8(header.path()).map_err(|_| error("invalid tar path"))?;
+        validate_browser_tar_path(path)?;
+        let link = std::str::from_utf8(&header.link).map_err(|_| error("invalid tar link"))?;
+        let data = if header.kind == b'1' {
+            Vec::new()
+        } else {
+            read_bounded(body, MAX_CHUNK_FILE_BYTES)?
+        };
+        vault.entry(path, header.kind, link, &data)
+    })?;
+    tar.reject_nonzero_trailing()?;
+    vault.finish()
+}
+
+/// Scans a vault file on disk. Its zstd window can be up to 2 GiB (older vaults), so zstd is told
+/// to allow that.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn scan_vault(
+    path: &Path,
+    zstd_program: &str,
+    prefabs: &PrefabNames,
+) -> Result<Vec<VaultSnapshot>, ScanError> {
+    let vault_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| error(format!("invalid vault path {}", path.display())))?
+        .to_string();
+    let mut child = Command::new(zstd_program)
+        .args(["-dc", "--long=31"])
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| error(format!("cannot start {zstd_program}: {e}")))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| error("zstd has no stdout"))?;
+    let result = scan_vault_reader(
+        BufReader::with_capacity(1024 * 1024, &mut stdout),
+        &vault_name,
+        prefabs,
+    );
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = io::copy(&mut stdout, &mut io::sink());
+    }
+    let status = child.wait().map_err(ScanError::from)?;
+    let snapshots = result?;
+    if !status.success() {
+        return Err(error(format!("zstd failed for {vault_name}")));
+    }
+    Ok(snapshots)
+}
+
+/// One world archive's scan, built file by file. Shared by the `.tar` readers (native and
+/// browser) and the vault reader, which builds one per snapshot.
+struct ArchiveBuilder {
+    archive: ArchiveScan,
+    metadata: Vec<ChunkMeta>,
+}
+
+impl ArchiveBuilder {
+    fn new(archive: String, snapshot: String) -> Self {
+        Self {
+            archive: ArchiveScan {
+                archive,
+                snapshot,
+                format: "metadata_only_incomplete".to_string(),
+                ..ArchiveScan::default()
+            },
+            metadata: Vec::new(),
+        }
+    }
+
+    /// Feeds one regular file at `internal_path` (its path inside the archive).
+    fn file<R: Read>(
+        &mut self,
+        internal_path: &str,
+        body: &mut R,
+        size: u64,
+        prefabs: &PrefabNames,
+    ) -> Result<(), ScanError> {
+        let archive = &mut self.archive;
+        if internal_path.ends_with("dathost_settings_backup.json") {
             return Ok(());
         }
-        if let Some(folder) = auto_backup_folder(internal_path) {
-            note_auto_backup(&mut archive, folder);
+        if let Some(folder) = backup_folder(internal_path) {
+            note_backup(archive, folder);
             return Ok(());
         }
         if internal_path.ends_with(".fch") {
@@ -2646,8 +3027,8 @@ pub fn scan_tar_bytes(
             let (version, total, entries) = parse_chunks_metadata(body)?;
             archive.metadata_total = Some(total);
             archive.metadata_entries = entries.len();
-            metadata = entries;
-            if version != 41 {
+            self.metadata = entries;
+            if !matches!(version, 41 | 42) {
                 return Err(error(format!(
                     "unexpected chunks metadata version {version}"
                 )));
@@ -2655,16 +3036,15 @@ pub fn scan_tar_bytes(
         } else if internal_path.ends_with(".chunk") {
             let output = parse_chunk_reader(
                 body,
-                header.size,
+                size,
                 &archive.archive,
                 &archive.snapshot,
                 internal_path,
                 prefabs,
-                &metadata,
+                &self.metadata,
                 &mut ScrubSink::default(),
             )?;
-            archive.format = "chunked_v41".to_string();
-            merge_parse(&mut archive, output);
+            self.chunk(output);
         } else if internal_path.ends_with("Dedicated.db") {
             let output = parse_legacy_reader(
                 body,
@@ -2674,48 +3054,59 @@ pub fn scan_tar_bytes(
                 prefabs,
             )?;
             archive.format = "legacy_v37".to_string();
-            merge_parse(&mut archive, output);
+            merge_parse(archive, output);
         } else if internal_path.ends_with(".fwl2") {
             let parsed =
                 read_bounded(body, MAX_WORLD_META_BYTES).and_then(|bytes| parse_fwl2_bytes(&bytes));
-            merge_world_meta(&mut archive, parsed);
+            merge_world_meta(archive, parsed);
         } else if internal_path.ends_with(".db2") {
             let parsed =
                 read_bounded(body, MAX_DB2_ENTRY_BYTES).and_then(|bytes| parse_db2_bytes(&bytes));
-            merge_world_meta(&mut archive, parsed);
+            merge_world_meta(archive, parsed);
         }
         Ok(())
-    })?;
-    tar.reject_nonzero_trailing()?;
-    if archive.format == "chunked_v41" {
-        fill_chunk_revisions(&mut archive, &metadata);
-        if archive.metadata_total != Some(archive.zdo_count as i32) {
-            return Err(error(format!(
-                "{} chunk total mismatch: metadata {:?}, parsed {}",
-                archive.archive, archive.metadata_total, archive.zdo_count
-            )));
-        }
-    } else if archive.format == "metadata_only_incomplete" {
-        return Err(error("tar contains no recognized parseable world payload"));
     }
-    Ok(archive)
+
+    /// Merges an already parsed v41 chunk (the vault reuses parses across snapshots).
+    fn chunk(&mut self, output: ParseOutput) {
+        self.archive.format = "chunked_v41".to_string();
+        merge_parse(&mut self.archive, output);
+    }
+
+    /// Completes the scan; `require_world` rejects an archive with no parseable world in it.
+    fn finish(mut self, require_world: bool) -> Result<ArchiveScan, ScanError> {
+        let archive = &mut self.archive;
+        if archive.format == "chunked_v41" {
+            fill_chunk_revisions(archive, &self.metadata);
+            if archive.metadata_total != Some(archive.zdo_count as i32) {
+                return Err(error(format!(
+                    "{} chunk total mismatch: metadata {:?}, parsed {}",
+                    archive.archive, archive.metadata_total, archive.zdo_count
+                )));
+            }
+        } else if require_world && archive.format == "metadata_only_incomplete" {
+            return Err(error("tar contains no recognized parseable world payload"));
+        }
+        Ok(self.archive)
+    }
 }
 
 const MAX_CHUNK_FILE_BYTES: u64 = 128 * 1024 * 1024;
 
-/// The dedicated server's own rotating world backup folder a tar path sits in, if any. The server
-/// names them `<world>_backup_auto-yyyyMMdd-HHmmss` (`SaveSystem.cs`, `c_BackupAutoNaming`); each
+/// The game's own world backup folder a tar path sits in, if any. The game counts any save named
+/// `<world>_backup_...` as a backup (`SaveSystem.cs`: `_backup_auto-` rotating, `_backup_cloud-`,
+/// `_backup_restore-`, and plain `_backup_`, e.g. the copy taken before an upgrade); each
 /// is a full, older copy of the world with its own chunk index, so a scan must not add it to the
 /// live world.
-fn auto_backup_folder(internal_path: &str) -> Option<&str> {
+fn backup_folder(internal_path: &str) -> Option<&str> {
     internal_path
         .split('/')
-        .find(|part| part.contains("_backup_auto-"))
+        .find(|part| part.contains("_backup_"))
 }
 
-fn note_auto_backup(archive: &mut ArchiveScan, folder: &str) {
-    if !archive.auto_backups.iter().any(|known| known == folder) {
-        archive.auto_backups.push(folder.to_string());
+fn note_backup(archive: &mut ArchiveScan, folder: &str) {
+    if !archive.world_backups.iter().any(|known| known == folder) {
+        archive.world_backups.push(folder.to_string());
     }
 }
 
@@ -2735,10 +3126,10 @@ pub struct ScrubbedFile {
 pub struct ScrubOutcome {
     pub files: Vec<ScrubbedFile>,
     pub patches: Vec<ScrubPatch>,
-    /// ZDOs in the live world (automatic backups are scrubbed too but not counted here).
+    /// ZDOs in the live world (world backups are scrubbed too but not counted here).
     pub zdo_count: u64,
-    /// The server's own `_backup_auto-` world folders, scrubbed alongside the live world.
-    pub auto_backups: Vec<String>,
+    /// The game's own world backup folders (`<world>_backup_...`), scrubbed alongside the live world.
+    pub world_backups: Vec<String>,
 }
 
 /// Path within the tar, relative to `worlds_local/` (the world save directory itself), or `None`
@@ -2756,8 +3147,8 @@ fn world_relative_path(internal_path: &str) -> Option<String> {
 struct WorldTar {
     /// The world's folder under `worlds_local/`.
     folder: String,
-    /// One of the dedicated server's rotating `_backup_auto-` copies, not the live world.
-    auto_backup: bool,
+    /// One of the game's own world backups (`<world>_backup_...`), not the live world.
+    backup: bool,
     metadata: Vec<ChunkMeta>,
     metadata_total: i32,
     /// Sorted by path.
@@ -2768,7 +3159,7 @@ struct WorldTar {
 
 /// Every world folder under `worlds_local/` in a backup tar, the live world first. Each folder is a
 /// complete world save with its own `.chunks` index: the live world plus any of the dedicated
-/// server's rotating `_backup_auto-` copies. Exactly one live world is required, only v41 chunked
+/// game's own `<world>_backup_...` copies. Exactly one live world is required, only v41 chunked
 /// worlds are accepted, and any file whose layout is not known fails the read closed.
 fn read_world_tars(bytes: &[u8]) -> Result<Vec<WorldTar>, ScanError> {
     #[derive(Default)]
@@ -2820,7 +3211,7 @@ fn read_world_tars(bytes: &[u8]) -> Result<Vec<WorldTar>, ScanError> {
         };
         if internal_path.ends_with(".chunks") {
             let (version, total, entries) = parse_chunks_metadata(&mut &file.bytes[..])?;
-            if version != 41 {
+            if !matches!(version, 41 | 42) {
                 return Err(error(format!(
                     "unexpected chunks metadata version {version}"
                 )));
@@ -2851,7 +3242,7 @@ fn read_world_tars(bytes: &[u8]) -> Result<Vec<WorldTar>, ScanError> {
         }
         folder.chunks.sort_by(|a, b| a.path.cmp(&b.path));
         worlds.push(WorldTar {
-            auto_backup: name.contains("_backup_auto-"),
+            backup: name.contains("_backup_"),
             folder: name,
             metadata: folder.metadata,
             metadata_total,
@@ -2859,13 +3250,13 @@ fn read_world_tars(bytes: &[u8]) -> Result<Vec<WorldTar>, ScanError> {
             passthrough: folder.passthrough,
         });
     }
-    let live = worlds.iter().filter(|world| !world.auto_backup).count();
+    let live = worlds.iter().filter(|world| !world.backup).count();
     if live != 1 {
         return Err(error(format!(
             "expected exactly one live world folder under worlds_local/, found {live}"
         )));
     }
-    worlds.sort_by_key(|world| (world.auto_backup, world.folder.clone()));
+    worlds.sort_by_key(|world| (world.backup, world.folder.clone()));
     Ok(worlds)
 }
 
@@ -2933,8 +3324,8 @@ pub fn scrub_world_tar_bytes(
                 world.folder, world.metadata_total
             )));
         }
-        if world.auto_backup {
-            outcome.auto_backups.push(world.folder);
+        if world.backup {
+            outcome.world_backups.push(world.folder);
         } else {
             outcome.zdo_count = world_zdos;
         }
@@ -3050,7 +3441,7 @@ pub fn scrub_chunk_in_place(
         }],
         patches,
         zdo_count: before.zdo_count,
-        auto_backups: Vec::new(),
+        world_backups: Vec::new(),
     };
     Ok((patched, outcome))
 }
@@ -3107,12 +3498,12 @@ pub struct ScrubAction {
 #[derive(Debug)]
 pub struct ScrubReport {
     pub mode: ScrubMode,
-    /// ZDOs in the live world before and after; automatic backups are scrubbed the same way.
+    /// ZDOs in the live world before and after; world backups are scrubbed the same way.
     pub zdo_count_before: u64,
     pub zdo_count_after: u64,
-    /// The server's own `_backup_auto-` world folders, scrubbed alongside the live world.
-    pub auto_backups: Vec<String>,
-    /// Every action, automatic backups included (their `file_path` names the folder).
+    /// The game's own world backup folders (`<world>_backup_...`), scrubbed alongside the live world.
+    pub world_backups: Vec<String>,
+    /// Every action, world backups included (their `file_path` names the folder).
     pub actions: Vec<ScrubAction>,
 }
 
@@ -3122,7 +3513,7 @@ impl ScrubReport {
             mode: ScrubMode::Clean,
             zdo_count_before: outcome.zdo_count,
             zdo_count_after: outcome.zdo_count,
-            auto_backups: outcome.auto_backups.clone(),
+            world_backups: outcome.world_backups.clone(),
             actions: outcome
                 .patches
                 .iter()
@@ -3530,7 +3921,7 @@ fn rebuild_chunk(
 fn reject_extended_tar_headers(bytes: &[u8]) -> Result<(), ScanError> {
     let mut tar = TarStream::new(bytes);
     while let Some(header) = tar.next_header()? {
-        if !matches!(header.kind, 0 | b'0' | b'5') {
+        if header.extended || !matches!(header.kind, 0 | b'0' | b'5') {
             return Err(error(format!(
                 "the backup uses a tar entry type ({}) whose size this scrub cannot rewrite; use \
                  the clean mode",
@@ -3589,15 +3980,15 @@ pub fn scrub_tar(
         mode,
         zdo_count_before: 0,
         zdo_count_after: 0,
-        auto_backups: Vec::new(),
+        world_backups: Vec::new(),
         actions: Vec::new(),
     };
     let mut rebuilds = Vec::new();
     let mut live_kept_flags = 0usize;
     for world in &worlds {
         let rebuild = rebuild_world(world, prefabs, mode)?;
-        if world.auto_backup {
-            report.auto_backups.push(world.folder.clone());
+        if world.backup {
+            report.world_backups.push(world.folder.clone());
         } else {
             report.zdo_count_before = rebuild.before;
             report.zdo_count_after = rebuild.after;
@@ -3867,12 +4258,12 @@ fn scrub_audit_json(report: &ScrubReport) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"mode\":{},\"zdo_count_before\":{},\"zdo_count_after\":{},\"auto_backups\":[{}],\"action_count\":{},\"actions\":[{}]}}",
+        "{{\"mode\":{},\"zdo_count_before\":{},\"zdo_count_after\":{},\"world_backups\":[{}],\"action_count\":{},\"actions\":[{}]}}",
         json_string(report.mode.as_str()),
         report.zdo_count_before,
         report.zdo_count_after,
         report
-            .auto_backups
+            .world_backups
             .iter()
             .map(|folder| json_string(folder))
             .collect::<Vec<_>>()
@@ -3893,10 +4284,10 @@ fn scrub_audit_markdown(report: &ScrubReport) -> String {
         report.zdo_count_before,
         report.zdo_count_after
     );
-    if !report.auto_backups.is_empty() {
+    if !report.world_backups.is_empty() {
         md.push_str(&format!(
-            "The server's own automatic backups in this archive were scrubbed the same way: {}\n\n",
-            report.auto_backups.join(", ")
+            "The game's own world backups in this archive were scrubbed the same way: {}\n\n",
+            report.world_backups.join(", ")
         ));
     }
     // Summarize the live world; the table below lists every folder's actions.
@@ -3904,7 +4295,7 @@ fn scrub_audit_markdown(report: &ScrubReport) -> String {
     for action in report
         .actions
         .iter()
-        .filter(|action| !action.file_path.contains("_backup_auto-"))
+        .filter(|action| !action.file_path.contains("_backup_"))
     {
         match summary
             .iter_mut()
@@ -4174,73 +4565,11 @@ pub fn scan_archive(
         .take()
         .ok_or_else(|| error("zstd has no stdout"))?;
     let mut tar = TarStream::new(BufReader::with_capacity(1024 * 1024, stdout));
-    let mut archive = ArchiveScan {
-        archive: archive_name.clone(),
-        snapshot: snapshot.clone(),
-        format: "metadata_only_incomplete".to_string(),
-        ..ArchiveScan::default()
-    };
-    let mut metadata = Vec::new();
+    let mut builder = ArchiveBuilder::new(archive_name.clone(), snapshot);
     let scan_result = tar.for_each_entry(|header, body| {
-        let path_bytes = header.path();
-        if path_bytes.ends_with(b"dathost_settings_backup.json") {
-            return Ok(());
-        }
         let internal_path =
-            std::str::from_utf8(path_bytes).map_err(|_| error("invalid tar path"))?;
-        if let Some(folder) = auto_backup_folder(internal_path) {
-            note_auto_backup(&mut archive, folder);
-            return Ok(());
-        }
-        if internal_path.ends_with(".fch") {
-            archive.player_profiles_present = true;
-            return Ok(());
-        }
-        if internal_path.ends_with(".chunks") {
-            let (version, total, entries) = parse_chunks_metadata(body)?;
-            archive.metadata_total = Some(total);
-            archive.metadata_entries = entries.len();
-            metadata = entries;
-            if version != 41 {
-                return Err(error(format!(
-                    "unexpected chunks metadata version {version}"
-                )));
-            }
-        } else if internal_path.ends_with(".chunk") {
-            let path_name = internal_path.rsplit('/').next().unwrap_or(internal_path);
-            let output = parse_chunk_reader(
-                body,
-                header.size,
-                &archive.archive,
-                &archive.snapshot,
-                internal_path,
-                prefabs,
-                &metadata,
-                &mut ScrubSink::default(),
-            )?;
-            archive.format = "chunked_v41".to_string();
-            merge_parse(&mut archive, output);
-            let _ = path_name;
-        } else if internal_path.ends_with("Dedicated.db") {
-            let output = parse_legacy_reader(
-                body,
-                &archive.archive,
-                &archive.snapshot,
-                internal_path,
-                prefabs,
-            )?;
-            archive.format = "legacy_v37".to_string();
-            merge_parse(&mut archive, output);
-        } else if internal_path.ends_with(".fwl2") {
-            let parsed =
-                read_bounded(body, MAX_WORLD_META_BYTES).and_then(|bytes| parse_fwl2_bytes(&bytes));
-            merge_world_meta(&mut archive, parsed);
-        } else if internal_path.ends_with(".db2") {
-            let parsed =
-                read_bounded(body, MAX_DB2_ENTRY_BYTES).and_then(|bytes| parse_db2_bytes(&bytes));
-            merge_world_meta(&mut archive, parsed);
-        }
-        Ok(())
+            std::str::from_utf8(header.path()).map_err(|_| error("invalid tar path"))?;
+        builder.file(internal_path, body, header.size, prefabs)
     });
     if let Err(scan_error) = scan_result {
         let _ = child.kill();
@@ -4251,18 +4580,9 @@ pub fn scan_archive(
     }
     let status = child.wait().map_err(ScanError::from)?;
     if !status.success() {
-        return Err(error(format!("zstd failed for {}", archive.archive)));
+        return Err(error(format!("zstd failed for {archive_name}")));
     }
-    if archive.format == "chunked_v41" {
-        fill_chunk_revisions(&mut archive, &metadata);
-        if archive.metadata_total != Some(archive.zdo_count as i32) {
-            return Err(error(format!(
-                "{} chunk total mismatch: metadata {:?}, parsed {}",
-                archive.archive, archive.metadata_total, archive.zdo_count
-            )));
-        }
-    }
-    Ok(archive)
+    builder.finish(false)
 }
 
 fn fill_chunk_revisions(archive: &mut ArchiveScan, metadata: &[ChunkMeta]) {
@@ -4281,22 +4601,54 @@ fn fill_chunk_revisions(archive: &mut ArchiveScan, metadata: &[ChunkMeta]) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn scan_archives(
-    archive_dir: &Path,
-    zstd_program: &str,
-    prefab_path: &Path,
-    biome_path: Option<&Path>,
-) -> Result<Vec<ArchiveScan>, ScanError> {
+fn load_prefabs(prefab_path: &Path, biome_path: Option<&Path>) -> Result<PrefabNames, ScanError> {
     let prefabs = PrefabNames::load(prefab_path)?;
     // Biomes are optional: without the table the map simply has no biome layer.
-    let prefabs = match biome_path {
+    Ok(match biome_path {
         Some(path) => {
             let text = std::fs::read_to_string(path)
                 .map_err(|e| error(format!("cannot read {}: {e}", path.display())))?;
             prefabs.with_biome_text(&text)
         }
         None => prefabs,
-    };
+    })
+}
+
+/// A vault's timeline as archives, oldest first, plus a note for every snapshot left out of it:
+/// duplicates (one backup stored twice) and `-scrubbed` branches.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn scan_vault_archives(
+    vault_path: &Path,
+    zstd_program: &str,
+    prefab_path: &Path,
+    biome_path: Option<&Path>,
+) -> Result<(Vec<ArchiveScan>, Vec<String>), ScanError> {
+    let prefabs = load_prefabs(prefab_path, biome_path)?;
+    let mut archives = Vec::new();
+    let mut skipped = Vec::new();
+    for snapshot in scan_vault(vault_path, zstd_program, &prefabs)? {
+        if snapshot.scan.format == "metadata_only_incomplete" {
+            skipped.push(format!("{} (holds no world)", snapshot.name));
+        } else if let Some(original) = &snapshot.duplicate_of {
+            skipped.push(format!("{} (the same backup as {original})", snapshot.name));
+        } else if snapshot.scrubbed {
+            skipped.push(format!("{} (a scrubbed copy)", snapshot.name));
+        } else {
+            archives.push(snapshot.scan);
+        }
+    }
+    archives.sort_by(|left, right| left.snapshot.cmp(&right.snapshot));
+    Ok((archives, skipped))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn scan_archives(
+    archive_dir: &Path,
+    zstd_program: &str,
+    prefab_path: &Path,
+    biome_path: Option<&Path>,
+) -> Result<Vec<ArchiveScan>, ScanError> {
+    let prefabs = load_prefabs(prefab_path, biome_path)?;
     let mut paths: Vec<PathBuf> = std::fs::read_dir(archive_dir)
         .map_err(|e| error(format!("cannot read {}: {e}", archive_dir.display())))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
@@ -4423,7 +4775,7 @@ fn json_evidence(evidence: &Evidence, delta_status: &str) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"archive\":{},\"snapshot\":{},\"internal_path\":{},\"format\":{},\"chunk_filename\":{},\"chunk_version\":{},\"chunk_size\":{},\"chunk_revision\":{},\"zdo_ordinal\":{},\"owner_prefab_hash\":{},\"owner_prefab_name\":{},\"position\":{},\"legacy_sector\":{},\"key_hash\":{},\"key_name\":{},\"kind\":{},\"delta_status\":{},\"item_hash\":{},\"item_name\":{},\"grid\":{},\"quality\":{},\"stack\":{},\"variant\":{},\"crafter_id\":{},\"crafter_name\":{},\"world_level\":{},\"custom_data_keys\":[{}]}}",
+        "{{\"archive\":{},\"snapshot\":{},\"internal_path\":{},\"format\":{},\"chunk_filename\":{},\"chunk_version\":{},\"chunk_size\":{},\"chunk_revision\":{},\"zdo_ordinal\":{},\"owner_prefab_hash\":{},\"owner_prefab_name\":{},\"position\":{},\"legacy_sector\":{},\"key_hash\":{},\"key_name\":{},\"kind\":{},\"delta_status\":{},\"item_hash\":{},\"item_name\":{},\"grid\":{},\"quality\":{},\"stack\":{},\"variant\":{},\"crafter_id\":{},\"crafter_name\":{},\"world_level\":{},\"custom_data_keys\":[{}],\"cheat_revision\":{}}}",
         json_string(&evidence.archive),
         json_string(&evidence.snapshot),
         json_string(&evidence.internal_path),
@@ -4451,6 +4803,7 @@ fn json_evidence(evidence: &Evidence, delta_status: &str) -> String {
         json_opt_string(evidence.crafter_name.as_deref()),
         json_opt_u8(evidence.world_level),
         custom_keys,
+        json_opt_u8(evidence.cheat_revision),
     )
 }
 
@@ -4647,7 +5000,7 @@ fn json_world(archive: &ArchiveScan) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "\"world_version\":{},\"world_name\":{},\"world_seed\":{},\"world_player_count\":{},\"global_keys\":[{}],\"world_metadata_error\":{},\"auto_backups\":[{}]",
+        "\"world_version\":{},\"world_name\":{},\"world_seed\":{},\"world_player_count\":{},\"global_keys\":[{}],\"world_metadata_error\":{},\"world_backups\":[{}]",
         archive
             .world
             .version
@@ -4663,7 +5016,7 @@ fn json_world(archive: &ArchiveScan) -> String {
         keys,
         json_opt_string(archive.world_metadata_error.as_deref()),
         archive
-            .auto_backups
+            .world_backups
             .iter()
             .map(|folder| json_string(folder))
             .collect::<Vec<_>>()
@@ -5370,7 +5723,7 @@ fn browser_json_evidence(evidence: &Evidence, lineage: &BrowserLineage) -> Strin
         .join(",");
     let chunk = evidence.chunk_filename.as_deref().map(browser_filename);
     format!(
-        "{{\"status\":{},\"first_seen_snapshot\":{},\"last_seen_snapshot\":{},\"present_in_latest\":{},\"occurrence_index\":{},\"archive\":{},\"snapshot\":{},\"source\":{},\"internal_path\":{},\"format\":{},\"chunk\":{},\"chunk_version\":{},\"chunk_size\":{},\"chunk_revision\":{},\"zdo_ordinal\":{},\"owner_prefab_hash\":{},\"owner_prefab_name\":{},\"position\":{},\"legacy_sector\":{},\"key_hash\":{},\"key_name\":{},\"kind\":{},\"item_hash\":{},\"item_name\":{},\"grid\":{},\"quality\":{},\"stack\":{},\"variant\":{},\"crafter_name\":{},\"world_level\":{},\"custom_data_keys\":[{}]}}",
+        "{{\"status\":{},\"first_seen_snapshot\":{},\"last_seen_snapshot\":{},\"present_in_latest\":{},\"occurrence_index\":{},\"archive\":{},\"snapshot\":{},\"source\":{},\"internal_path\":{},\"format\":{},\"chunk\":{},\"chunk_version\":{},\"chunk_size\":{},\"chunk_revision\":{},\"zdo_ordinal\":{},\"owner_prefab_hash\":{},\"owner_prefab_name\":{},\"position\":{},\"legacy_sector\":{},\"key_hash\":{},\"key_name\":{},\"kind\":{},\"item_hash\":{},\"item_name\":{},\"grid\":{},\"quality\":{},\"stack\":{},\"variant\":{},\"crafter_name\":{},\"world_level\":{},\"custom_data_keys\":[{}],\"cheat_revision\":{}}}",
         json_string(lineage.status),
         json_string(&lineage.first_seen_snapshot),
         json_string(&lineage.last_seen_snapshot),
@@ -5402,6 +5755,7 @@ fn browser_json_evidence(evidence: &Evidence, lineage: &BrowserLineage) -> Strin
         json_opt_string(evidence.crafter_name.as_deref()),
         json_opt_u8(evidence.world_level),
         custom_keys,
+        json_opt_u8(evidence.cheat_revision),
     )
 }
 
@@ -7014,7 +7368,7 @@ mod tests {
     }
 
     #[test]
-    fn server_auto_backups_are_skipped_by_scans_and_scrubbed_with_the_live_world() {
+    fn server_world_backups_are_skipped_by_scans_and_scrubbed_with_the_live_world() {
         let (chunk, prefabs) = mode_test_chunk();
         let backup = "Dedicated_backup_auto-20260927-121154";
         let mut tar = Vec::new();
@@ -7031,11 +7385,11 @@ mod tests {
 
         let scan = scan_tar_bytes(&tar, "a.tar", &prefabs).unwrap();
         assert_eq!(scan.zdo_count, 6, "only the live world is scanned");
-        assert_eq!(scan.auto_backups, [backup]);
+        assert_eq!(scan.world_backups, [backup]);
 
         let (out, report) = scrub_tar(&tar, &prefabs, ScrubMode::Destroy).unwrap();
         assert_eq!((report.zdo_count_before, report.zdo_count_after), (6, 3));
-        assert_eq!(report.auto_backups, [backup]);
+        assert_eq!(report.world_backups, [backup]);
         let worlds = read_world_tars(&out).unwrap();
         assert_eq!(worlds.len(), 2);
         assert!(
@@ -7083,6 +7437,206 @@ mod tests {
             .unwrap()
             .evidence
             .is_empty());
+    }
+
+    /// A tar header block of any type, with a link target, and a correct checksum.
+    fn tar_block(name: &[u8], size: u64, kind: u8, link: &[u8]) -> [u8; 512] {
+        let mut block = [0u8; 512];
+        block[..name.len()].copy_from_slice(name);
+        block[124..135].copy_from_slice(format!("{size:011o}").as_bytes());
+        block[156] = kind;
+        block[157..157 + link.len()].copy_from_slice(link);
+        block[148..156].fill(b' ');
+        let checksum = block.iter().map(|byte| *byte as u64).sum::<u64>();
+        block[148..154].copy_from_slice(format!("{checksum:06o}").as_bytes());
+        block[154] = 0;
+        block
+    }
+
+    fn append_raw(tar: &mut Vec<u8>, block: [u8; 512], body: &[u8]) {
+        tar.extend(block);
+        tar.extend(body);
+        tar.resize(tar.len() + (512 - body.len() % 512) % 512, 0);
+    }
+
+    /// A pax header carrying `path` (and `linkpath`) for the entry after it.
+    fn append_pax(tar: &mut Vec<u8>, records: &[(&str, &str)]) {
+        let mut body = Vec::new();
+        for (key, value) in records {
+            let text = format!(" {key}={value}\n");
+            let mut length = text.len() + 1;
+            while format!("{length}{text}").len() != length {
+                length += 1;
+            }
+            body.extend(format!("{length}{text}").as_bytes());
+        }
+        append_raw(
+            tar,
+            tar_block(b"PaxHeader", body.len() as u64, b'x', b""),
+            &body,
+        );
+    }
+
+    #[test]
+    fn tar_headers_resolve_pax_gnu_and_ustar_prefix_paths() {
+        let long = format!("{}/{}", "a".repeat(80), "b".repeat(40));
+        let mut tar = Vec::new();
+        append_pax(&mut tar, &[("path", &long), ("linkpath", "target/file")]);
+        append_raw(&mut tar, tar_block(b"truncated", 0, b'1', b""), b"");
+        append_raw(
+            &mut tar,
+            tar_block(b"././@LongLink", 8, b'L', b""),
+            b"gnu/long",
+        );
+        append_raw(&mut tar, tar_block(b"short", 3, b'0', b""), b"abc");
+        let mut prefixed = tar_block(b"name", 0, b'0', b"");
+        prefixed[257..263].copy_from_slice(b"ustar\0");
+        prefixed[345..351].copy_from_slice(b"prefix");
+        prefixed[148..156].fill(b' ');
+        let checksum = prefixed.iter().map(|byte| *byte as u64).sum::<u64>();
+        prefixed[148..154].copy_from_slice(format!("{checksum:06o}").as_bytes());
+        prefixed[154] = 0;
+        append_raw(&mut tar, prefixed, b"");
+        finish_tar(&mut tar);
+
+        let mut stream = TarStream::new(&tar[..]);
+        let mut seen = Vec::new();
+        stream
+            .for_each_entry_of(b"01", |header, _| {
+                seen.push((
+                    String::from_utf8(header.path.clone()).unwrap(),
+                    String::from_utf8(header.link.clone()).unwrap(),
+                    header.extended,
+                ));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            seen,
+            [
+                (long, "target/file".to_string(), true),
+                ("gnu/long".to_string(), String::new(), true),
+                ("prefix/name".to_string(), String::new(), false),
+            ]
+        );
+    }
+
+    /// One world, in a vault snapshot folder: index plus one chunk.
+    fn vault_world(tar: &mut Vec<u8>, snapshot: &str, chunk: &[u8]) {
+        let base = format!("{snapshot}/SaveDir/worlds_local/Dedicated");
+        append_tar_entry(
+            tar,
+            &format!("{base}/_main.1.chunks"),
+            &single_chunk_index(6),
+        );
+        append_tar_entry(tar, &format!("{base}/00_00__1_1.chunk"), chunk);
+    }
+
+    /// A later snapshot whose world files are all hardlinks back to `from`'s copies; the chunk link
+    /// goes through a pax header, as Python writes for long paths.
+    fn vault_linked_world(tar: &mut Vec<u8>, snapshot: &str, from: &str) {
+        let base = "SaveDir/worlds_local/Dedicated";
+        for file in ["_main.1.chunks", "00_00__1_1.chunk"] {
+            let path = format!("{snapshot}/{base}/{file}");
+            let target = format!("{from}/{base}/{file}");
+            append_pax(
+                tar,
+                &[("path", &path), ("linkpath", &target), ("VAULT.dedup", "1")],
+            );
+            append_raw(tar, tar_block(b"x", 0, b'1', b""), b"");
+        }
+    }
+
+    #[test]
+    fn vault_snapshots_reuse_linked_chunks_and_flag_duplicates_branches_and_empty_ones() {
+        let (chunk, prefabs) = mode_test_chunk();
+        let mut tar = Vec::new();
+        append_tar_entry(&mut tar, "2026-09-08/SaveDir/adminlist.txt", b"admins");
+        append_tar_entry(&mut tar, "_vault/2026-09-08.json", b"{}");
+        vault_world(&mut tar, "2026-09-09", &chunk);
+        vault_linked_world(&mut tar, "2026-09-10", "2026-09-09");
+        vault_linked_world(&mut tar, "2026-09-10-12-00", "2026-09-09");
+        let (scrubbed, _) = mode_test_chunk();
+        let scrubbed = scrub_chunk_in_place(&scrubbed, "00_00__1_1.chunk", &prefabs)
+            .unwrap()
+            .0;
+        vault_world(&mut tar, "2026-09-10-scrubbed", &scrubbed);
+        append_tar_entry(&mut tar, "_vault.json", b"[]");
+        finish_tar(&mut tar);
+
+        let snapshots = scan_vault_reader(&tar[..], "vault.tar.zst", &prefabs).unwrap();
+        let names: Vec<&str> = snapshots
+            .iter()
+            .map(|snapshot| snapshot.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "2026-09-08",
+                "2026-09-09",
+                "2026-09-10",
+                "2026-09-10-12-00",
+                "2026-09-10-scrubbed"
+            ]
+        );
+        assert_eq!(
+            snapshots[0].scan.format, "metadata_only_incomplete",
+            "no world yet"
+        );
+        assert_eq!(snapshots[1].scan.zdo_count, 6);
+        let linked = &snapshots[2].scan;
+        assert_eq!(
+            linked.zdo_count, 6,
+            "the linked chunk counts in its own snapshot"
+        );
+        assert_eq!(linked.evidence.len(), snapshots[1].scan.evidence.len());
+        assert!(linked.evidence.iter().all(|hit| {
+            hit.snapshot == "2026-09-10"
+                && hit.archive == "vault.tar.zst#2026-09-10"
+                && hit.internal_path == "SaveDir/worlds_local/Dedicated/00_00__1_1.chunk"
+        }));
+        // Nothing but links to 2026-09-09's files: the same backup stored again.
+        assert_eq!(snapshots[2].duplicate_of.as_deref(), Some("2026-09-09"));
+        assert_eq!(snapshots[3].duplicate_of.as_deref(), Some("2026-09-09"));
+        assert_eq!(snapshots[4].duplicate_of, None);
+        assert!(snapshots[4].scrubbed && snapshots[4].scan.evidence.is_empty());
+    }
+
+    #[test]
+    fn chunk_version_42_and_item_version_110_carry_the_new_cheat_revision() {
+        let direct = |version: u8| -> Vec<u8> {
+            [version]
+                .into_iter()
+                .chain(named_item("Wood", true))
+                .collect()
+        };
+        let records = [
+            zdo_record("stone_wall_4x2", &[(CHEATED, 1)], &[]),
+            zdo_record("stone_wall_4x2", &[(CHEATED, 2)], &[]),
+            zdo_record("Wood", &[], &[(ITEM_DATA, direct(109))]),
+            zdo_record("Wood", &[], &[(ITEM_DATA, direct(110))]),
+        ];
+        let mut chunk = Vec::new();
+        push_i16(&mut chunk, 42);
+        push_i32(&mut chunk, records.len() as i32);
+        for record in records {
+            chunk.extend(record);
+        }
+        let scan = parse_chunk_bytes(&chunk, "00_00__1_1.chunk", &PrefabNames::default()).unwrap();
+        let revisions: Vec<(&str, Option<u8>)> = scan
+            .evidence
+            .iter()
+            .map(|hit| (hit.kind.as_str(), hit.cheat_revision))
+            .collect();
+        assert_eq!(
+            revisions,
+            [
+                ("zdo_cheated", Some(1)),
+                ("zdo_cheated", Some(2)),
+                ("direct_item_data", Some(1)),
+                ("direct_item_data", Some(2)),
+            ]
+        );
     }
 
     #[test]
@@ -7177,9 +7731,9 @@ mod tests {
 
     #[test]
     fn unsupported_versions_are_rejected() {
-        assert!(parse_direct_item(&[110]).is_err());
+        assert!(parse_direct_item(&[111]).is_err());
         let mut inventory = Vec::new();
-        push_i32(&mut inventory, 110);
+        push_i32(&mut inventory, 111);
         push_u16(&mut inventory, 0);
         assert!(parse_inventory(&inventory).is_err());
 
@@ -7326,6 +7880,7 @@ mod tests {
             crafter_name: None,
             world_level: Some(0),
             custom_keys: Vec::new(),
+            cheat_revision: None,
         }
     }
 

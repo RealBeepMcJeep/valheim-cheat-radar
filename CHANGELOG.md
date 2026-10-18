@@ -4,11 +4,22 @@
 
 ### Fixed
 
+- **Valheim 1.0.20 backups** (from 2026-10-15 on) failed with "expected current chunk version 41,
+  found 42". 1.0.20 bumped the chunk and index version to 42 and item data to 110 with the same byte
+  layout, and changed what a flag means: it only honours a `cheated` value of 2 and the cheated bit of
+  item data at version 110+, ignoring older flags that stay in the save. Both versions are read now,
+  and every piece of evidence carries `cheat_revision` (2 = honoured by 1.0.20+, 1 = an older flag).
+  Character files from 1.0.20 (profile 47, player data 34) are still reported as unsupported.
+- The game's other backup folders (any `<world>_backup_...`, e.g. the one 1.0.20 takes before first
+  saving an older world, `Dedicated_backup_20261015-100220`) were added to the live world like the
+  automatic ones had been. All `_backup_` folders are now treated as backups; the JSON field is
+  renamed `world_backups`.
+
 - Backups that also carry the dedicated server's own rotating world backups
   (`worlds_local/<world>_backup_auto-yyyyMMdd-HHmmss/`, full older copies with their own chunk index)
   failed with "chunk total mismatch": every copy's chunks were added to the live world (4,761,000 vs
   952,833 on the owner's 2026-09-27 backup, which holds four). Scans now read only the live world and
-  list the automatic backups (`auto_backups` per archive in the JSON, a line in World details); scrubs
+  list the automatic backups (now `world_backups` per archive in the JSON, a line in World details); scrubs
   change every world folder the same way, each verified against its own index, so no flagged copy
   survives in a scrubbed backup. On that backup a local dedicated server loads all three scrub modes
   and a scrubbed automatic backup restored as the live world without errors.
@@ -29,6 +40,13 @@
   tag survives or the worker URL nears the limit. The released v0.1.0 file predates both problems.
 
 ### Added
+
+- **Vault ingest (CLI):** `--vault valheim-backups.tar.zst` scans every snapshot of a valheim-vault
+  store as a timeline archive in one pass. Hardlinked (deduplicated) chunks reuse the parse of their
+  stored copy, so the owner's 44-snapshot vault (5.4 GB if exported) scans in about 6 seconds;
+  snapshots with no world, duplicates of an earlier snapshot and `-scrubbed` branches are left out of
+  the timeline with a note. Checked against the vault script's own exports: five snapshots scanned
+  from their exported `.tar.zst` give identical archive fields and evidence.
 
 - **Three scrub modes**, in the browser panel and as `--scrub-mode` in the CLI: *clean* (clear every
   flag, keep everything), *delete-items* (delete flagged items - dropped, in containers, on stands -

@@ -7,14 +7,15 @@ use std::time::Instant;
 
 #[cfg(not(target_arch = "wasm32"))]
 use valheim_backup_cheat_scanner::{
-    scan_archives, scan_character_timeline, scrub_world_archive, validate_character_oracle,
-    validate_oracle, validate_oracle_fixture_file, write_reports_with_characters, PrefabNames,
-    ScrubMode,
+    scan_archives, scan_character_timeline, scan_vault_archives, scrub_world_archive,
+    validate_character_oracle, validate_oracle, validate_oracle_fixture_file,
+    write_reports_with_characters, PrefabNames, ScrubMode,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
 fn usage() -> ! {
     eprintln!("usage: valheim-backup-cheat-scanner [--archive-dir DIR] [--output-dir DIR] [--prefab-names FILE] [--prefab-biomes FILE] [--zstd PROGRAM] [--character FILE] [--character-history-dir DIR] [--oracle FILE] [--validate]");
+    eprintln!("       valheim-backup-cheat-scanner --vault valheim-backups.tar.zst [--output-dir DIR] [--prefab-names FILE] [--prefab-biomes FILE] [--zstd PROGRAM] [--character FILE]");
     eprintln!("       valheim-backup-cheat-scanner --scrub-world ARCHIVE.tar.zst --scrub-out DIR [--scrub-mode clean|delete-items|destroy] [--prefab-names FILE] [--zstd PROGRAM]");
     std::process::exit(2);
 }
@@ -46,6 +47,7 @@ fn main() {
     let mut scrub_world: Option<PathBuf> = None;
     let mut scrub_out: Option<PathBuf> = None;
     let mut scrub_mode = ScrubMode::Clean;
+    let mut vault: Option<PathBuf> = None;
     let args: Vec<String> = env::args().skip(1).collect();
     let mut index = 0;
     while index < args.len() {
@@ -104,6 +106,10 @@ fn main() {
                 index += 1;
                 scrub_out = args.get(index).map(PathBuf::from).or_else(|| usage());
             }
+            "--vault" => {
+                index += 1;
+                vault = args.get(index).map(PathBuf::from).or_else(|| usage());
+            }
             "--scrub-mode" => {
                 index += 1;
                 scrub_mode = args
@@ -138,7 +144,7 @@ fn main() {
             let live_actions = report
                 .actions
                 .iter()
-                .filter(|action| !action.file_path.contains("_backup_auto-"));
+                .filter(|action| !action.file_path.contains("_backup_"));
             for action in live_actions {
                 match counts.iter_mut().find(|(name, _)| *name == action.action) {
                     Some(count) => count.1 += 1,
@@ -150,10 +156,10 @@ fn main() {
                 .map(|(name, count)| format!("{name} {count}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            if !report.auto_backups.is_empty() {
+            if !report.world_backups.is_empty() {
                 summary.push_str(&format!(
-                    " (the same in {} automatic server backup(s))",
-                    report.auto_backups.len()
+                    " (the same in {} of the server's own world backup(s))",
+                    report.world_backups.len()
                 ));
             }
             println!(
@@ -180,13 +186,21 @@ fn main() {
     } else {
         None
     };
-    let archives = match scan_archives(&archive_dir, &zstd, &prefab_names, biome_path) {
-        Ok(archives) => archives,
+    let scanned = match &vault {
+        Some(path) => scan_vault_archives(path, &zstd, &prefab_names, biome_path),
+        None => scan_archives(&archive_dir, &zstd, &prefab_names, biome_path)
+            .map(|archives| (archives, Vec::new())),
+    };
+    let (archives, skipped) = match scanned {
+        Ok(scanned) => scanned,
         Err(error) => {
             eprintln!("scan failed: {error}");
             std::process::exit(1);
         }
     };
+    for note in &skipped {
+        println!("left out of the timeline: {note}");
+    }
     if validate {
         if let Err(error) = validate_oracle(&archives) {
             eprintln!("oracle validation failed: {error}");
