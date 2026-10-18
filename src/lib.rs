@@ -4807,6 +4807,88 @@ fn json_evidence(evidence: &Evidence, delta_status: &str) -> String {
     )
 }
 
+/// One snapshot's line in the progression: the flagged evidence it holds and how that changed since
+/// the snapshot before it. Records are matched by `evidence_key` (kind, owner, exact position, key,
+/// item; not stack), counted with multiplicity so identical stacked records are not merged.
+struct ProgressionRow<'a> {
+    snapshot: &'a str,
+    zdo_count: u64,
+    flagged: usize,
+    new: usize,
+    gone: usize,
+    objects: usize,
+    dropped: usize,
+    contained: usize,
+    queued: usize,
+    /// Flags Valheim 1.0.20+ honours (`cheat_revision` 2).
+    current: usize,
+}
+
+fn progression(archives: &[ArchiveScan]) -> Vec<ProgressionRow<'_>> {
+    let mut previous: HashMap<String, usize> = HashMap::new();
+    archives
+        .iter()
+        .map(|archive| {
+            let mut keys: HashMap<String, usize> = HashMap::new();
+            for evidence in &archive.evidence {
+                *keys.entry(evidence_key(evidence)).or_default() += 1;
+            }
+            let more = |left: &HashMap<String, usize>, right: &HashMap<String, usize>| {
+                left.iter()
+                    .map(|(key, count)| count.saturating_sub(*right.get(key).unwrap_or(&0)))
+                    .sum()
+            };
+            let count = |kinds: &[&str]| {
+                archive
+                    .evidence
+                    .iter()
+                    .filter(|evidence| kinds.contains(&evidence.kind.as_str()))
+                    .count()
+            };
+            let row = ProgressionRow {
+                snapshot: &archive.snapshot,
+                zdo_count: archive.zdo_count,
+                flagged: archive.evidence.len(),
+                new: more(&keys, &previous),
+                gone: more(&previous, &keys),
+                objects: count(&["zdo_cheated"]),
+                dropped: count(&["direct_item_data"]),
+                contained: count(&["container_inventory", "indexed_item_data"]),
+                queued: count(&["station_queued_cheated"]),
+                current: archive
+                    .evidence
+                    .iter()
+                    .filter(|evidence| evidence.cheat_revision == Some(2))
+                    .count(),
+            };
+            previous = keys;
+            row
+        })
+        .collect()
+}
+
+fn progression_json(archives: &[ArchiveScan]) -> String {
+    progression(archives)
+        .iter()
+        .map(|row| {
+            format!(
+                "{{\"snapshot\":{},\"zdo_count\":{},\"flagged\":{},\"new\":{},\"gone\":{},\"objects\":{},\"dropped_items\":{},\"contained_items\":{},\"station_queues\":{},\"current_revision_flags\":{}}}",
+                json_string(row.snapshot),
+                row.zdo_count,
+                row.flagged,
+                row.new,
+                row.gone,
+                row.objects,
+                row.dropped,
+                row.contained,
+                row.queued,
+                row.current,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n    ")
+}
+
 fn evidence_key(evidence: &Evidence) -> String {
     format!(
         "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
@@ -4963,7 +5045,7 @@ fn report_json_with_characters(archives: &[ArchiveScan], characters: &[Character
         CHEATED, CHEATED_QUEUED, ITEM_DATA, ITEMS
     );
     format!(
-        "{{\n  \"tool\":\"valheim-backup-cheat-scanner-rust\",\n  \"summary\":{{\"archive_count\":{},\"zdo_count\":{},\"decoded_item_count\":{},\"item_count\":{},\"direct_item_count\":{},\"container_item_count\":{},\"indexed_item_count\":{},\"zdo_cheated_count\":{},\"station_queued_cheated_count\":{},\"evidence_records\":{},\"player_profiles_present\":{},\"visibility\":{}}},\n  \"observations\":{{\"identity_note\":\"Exact object identity across saves is approximate because chunked records omit persistent ZDOID; matching intentionally excludes stack and uses kind, owner hash, exact float-bit position, key, item, grid, quality, variant, crafter, and worldLevel.\",\"excluded_path\":\"dathost_settings_backup.json\",\"stable_hashes\":{}}},\n  \"archives\":[{}],\n  \"evidence\":[\n    {}\n  ],\n  \"character_timeline\":[\n    {}\n  ]\n}}\n",
+        "{{\n  \"tool\":\"valheim-backup-cheat-scanner-rust\",\n  \"summary\":{{\"archive_count\":{},\"zdo_count\":{},\"decoded_item_count\":{},\"item_count\":{},\"direct_item_count\":{},\"container_item_count\":{},\"indexed_item_count\":{},\"zdo_cheated_count\":{},\"station_queued_cheated_count\":{},\"evidence_records\":{},\"player_profiles_present\":{},\"visibility\":{}}},\n  \"observations\":{{\"identity_note\":\"Exact object identity across saves is approximate because chunked records omit persistent ZDOID; matching intentionally excludes stack and uses kind, owner hash, exact float-bit position, key, item, grid, quality, variant, crafter, and worldLevel.\",\"excluded_path\":\"dathost_settings_backup.json\",\"stable_hashes\":{}}},\n  \"archives\":[{}],\n  \"progression\":[\n    {}\n  ],\n  \"evidence\":[\n    {}\n  ],\n  \"character_timeline\":[\n    {}\n  ]\n}}\n",
         archives.len(),
         totals.0,
         decoded_total,
@@ -4978,6 +5060,7 @@ fn report_json_with_characters(archives: &[ArchiveScan], characters: &[Character
         json_string(if player_profiles_present { "world-and-character" } else { "world-only" }),
         stable_hashes,
         archive_json,
+        progression_json(archives),
         evidence,
         character_json,
     )
@@ -5414,6 +5497,24 @@ fn report_markdown_with_characters(
                 "\n- world metadata error in {}: {}\n",
                 archive.snapshot,
                 archive.world_metadata_error.clone().unwrap_or_default()
+            ));
+        }
+    }
+    if archives.len() > 1 {
+        output.push_str("\n## Progression\n\nNew and Gone compare each snapshot with the one before it, matching records by kind, owner, exact position, key and item (not stack). Post-1.0.20 flags are the ones Valheim 1.0.20 and later honour; older flags stay in the save, but the game ignores them.\n\n| Snapshot | ZDOs | Flagged | New | Gone | Objects | Dropped items | In containers | Station queues | Post-1.0.20 flags |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+        for row in progression(archives) {
+            output.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                row.snapshot,
+                row.zdo_count,
+                row.flagged,
+                row.new,
+                row.gone,
+                row.objects,
+                row.dropped,
+                row.contained,
+                row.queued,
+                row.current,
             ));
         }
     }
@@ -7637,6 +7738,26 @@ mod tests {
                 ("direct_item_data", Some(2)),
             ]
         );
+    }
+
+    #[test]
+    fn progression_counts_new_and_gone_records_with_multiplicity() {
+        let hit = |x: f32| Evidence {
+            position: Position { x, y: 0.0, z: 0.0 },
+            ..test_evidence("a", 1)
+        };
+        let archive = |snapshot: &str, hits: Vec<Evidence>| ArchiveScan {
+            snapshot: snapshot.to_string(),
+            evidence: hits,
+            ..ArchiveScan::default()
+        };
+        let archives = [
+            archive("a", vec![hit(1.0), hit(2.0)]),
+            archive("b", vec![hit(2.0), hit(3.0), hit(3.0)]),
+        ];
+        let rows = progression(&archives);
+        assert_eq!((rows[0].flagged, rows[0].new, rows[0].gone), (2, 2, 0));
+        assert_eq!((rows[1].flagged, rows[1].new, rows[1].gone), (3, 2, 1));
     }
 
     #[test]

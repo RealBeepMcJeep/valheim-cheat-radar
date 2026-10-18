@@ -47,6 +47,11 @@
   snapshots with no world, duplicates of an earlier snapshot and `-scrubbed` branches are left out of
   the timeline with a note. Checked against the vault script's own exports: five snapshots scanned
   from their exported `.tar.zst` give identical archive fields and evidence.
+- **Progression report (CLI):** with several snapshots, `CHEAT_AUDIT.md` has a Progression table and
+  `cheat-audit.json` a `progression` list: per snapshot, flagged records, new and gone since the one
+  before, split by kind, and flags 1.0.20+ honours. On the owner's vault it shows cheating from
+  2026-09-21 to 1,662 records, zero after the scrubbed restore on 09-30, new flags again 10-10 to
+  10-15, and nothing new since the 1.0.20 update (the 24 left are older flags the game ignores).
 
 - **Three scrub modes**, in the browser panel and as `--scrub-mode` in the CLI: *clean* (clear every
   flag, keep everything), *delete-items* (delete flagged items - dropped, in containers, on stands -
