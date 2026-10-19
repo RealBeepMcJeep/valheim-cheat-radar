@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { FailedFile, FinalReport, ScanCancelledError, ScannerWorkerClient, formatBytes, parseReport, scrubKind } from './scan';
-import type { ScrubResult } from './scan';
+import type { ScrubResult, VaultSnapshotRow } from './scan';
 import { SCRUB_MODES, summarizeScrub } from './scrub';
 import type { ScrubAudit, ScrubMode } from './scrub';
-import { filterEvidence, multiArchiveHint, sortEvidence, timelineSummary } from './view';
+import { TABLE_ROW_LIMIT, defaultSnapshotFilter, filterEvidence, multiArchiveHint, sortEvidence, timelineSummary } from './view';
 import { CLUSTER_RADIUS_OPTIONS, DEFAULT_CLUSTER_RADIUS, clusterEvidence, clusterSummaryLabel, evidenceLabel, spatialSort } from './tree';
 import type { ClusterOrder, TreeCluster } from './tree';
 import {
@@ -15,6 +15,8 @@ import {
   densityColor,
   densityGradientCss,
   densityTickCounts,
+  firstSeenColor,
+  firstSeenGradientCss,
   indexBiomeDetail,
   mostSevereStatus,
   peakDensity,
@@ -23,7 +25,7 @@ import {
 import type { CellBiomeDetail } from './map';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import type { Archive, Evidence, Report, SortKey } from './types';
+import type { Archive, Evidence, ProgressionRow, Report, SortKey } from './types';
 import './style.css';
 
 type QueueItem = {
@@ -34,7 +36,7 @@ type QueueItem = {
   error?: string;
 };
 
-type Tab = 'world' | 'characters' | 'timeline';
+type Tab = 'world' | 'characters' | 'timeline' | 'progression';
 type ScrubState = { status: 'running'; progress: string } | { status: 'done'; result: ScrubResult; acknowledged: boolean } | { status: 'error'; error: string };
 
 // Revoking right after click can cancel a large download in some browsers, so revoke later.
@@ -58,6 +60,8 @@ export function App() {
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState('all');
   const [status, setStatus] = useState('all');
+  const [snapshot, setSnapshot] = useState('all');
+  const [vaultRows, setVaultRows] = useState<VaultSnapshotRow[]>([]);
   const [sortKey, setSortKey] = useState<SortKey>('snapshot');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [busy, setBusy] = useState(false);
@@ -75,8 +79,19 @@ export function App() {
 
   const visibleEvidence = useMemo(() => {
     if (!report) return [];
-    return sortEvidence(filterEvidence(report.evidence, query, kind, status), sortKey, sortDirection);
-  }, [kind, query, report, sortDirection, sortKey, status]);
+    return sortEvidence(filterEvidence(report.evidence, query, kind, status, snapshot), sortKey, sortDirection);
+  }, [kind, query, report, snapshot, sortDirection, sortKey, status]);
+
+  const publish = (result: FinalReport) => {
+    const parsed = parseReport(result.json);
+    setExports(result);
+    setReport(parsed);
+    setSnapshot((current) => defaultSnapshotFilter(parsed, current));
+  };
+
+  const queueFailures = () => queue
+    .filter((item) => item.status === 'error' && item.error)
+    .map((item) => ({ name: item.file.name, error: item.error! }));
 
   const addFiles = (files: FileList | File[]) => {
     const additions = Array.from(files).map((file) => {
@@ -109,11 +124,12 @@ export function App() {
       for (const item of pending) {
         setQueue((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: 'scanning', progress: 'starting', error: undefined } : entry));
         try {
-          await scanner.scanFile(item.file, (progress) => {
+          const vault = await scanner.scanFile(item.file, (progress) => {
             if (run !== runGeneration.current) return;
             setProgressMessage(`${item.file.name}: ${progress.message}`);
             setQueue((current) => current.map((entry) => entry.id === item.id ? { ...entry, progress: progress.message } : entry));
           }, item.id);
+          if (vault) setVaultRows((current) => [...current, ...vault]);
           succeeded += 1;
           setQueue((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: 'done', progress: 'complete' } : entry));
         } catch (error) {
@@ -127,12 +143,7 @@ export function App() {
         setMessage('No files scanned successfully.');
         return;
       }
-      const priorFailures = queue
-        .filter((item) => item.status === 'error' && item.error)
-        .map((item) => ({ name: item.file.name, error: item.error! }));
-      const result = await scanner.report([...priorFailures, ...failures]);
-      setExports(result);
-      setReport(parseReport(result.json));
+      publish(await scanner.report([...queueFailures(), ...failures]));
       setProgressMessage(`Finished: ${succeeded} file(s) scanned.`);
     } catch (error) {
       if (run !== runGeneration.current) return;
@@ -154,16 +165,29 @@ export function App() {
     setMessage('');
     try {
       await client.current.setCanonical(index);
-      const failures = queue
-        .filter((item) => item.status === 'error' && item.error)
-        .map((item) => ({ name: item.file.name, error: item.error! }));
-      const result = await client.current.report(failures);
-      setExports(result);
-      setReport(parseReport(result.json));
+      publish(await client.current.report(queueFailures()));
       setMessage('Canonical profile selected.');
     } catch (error) {
       if (run !== runGeneration.current) return;
       setMessage(error instanceof Error ? error.message : 'Could not select canonical profile.');
+    } finally {
+      if (run === runGeneration.current) setBusy(false);
+    }
+  };
+
+  const selectVaultSnapshots = async (archives: string[]) => {
+    if (busy || !client.current) return;
+    const run = ++runGeneration.current;
+    setBusy(true);
+    setMessage('');
+    try {
+      await client.current.selectVaultArchives(archives);
+      publish(await client.current.report(queueFailures()));
+      setVaultRows((current) => current.map((row) => ({ ...row, included: archives.includes(row.archive) })));
+      setMessage(`Report updated: ${archives.length} vault snapshot(s) included.`);
+    } catch (error) {
+      if (run !== runGeneration.current) return;
+      setMessage(error instanceof Error ? error.message : 'Could not change the vault snapshots.');
     } finally {
       if (run === runGeneration.current) setBusy(false);
     }
@@ -215,6 +239,8 @@ export function App() {
     setQuery('');
     setKind('all');
     setStatus('all');
+    setSnapshot('all');
+    setVaultRows([]);
     setScrubs({});
     setScrubMode('clean');
   };
@@ -271,7 +297,7 @@ export function App() {
             <span>One file is processed at a time so the page stays responsive.</span>
           </label>
         </div>
-        <p className="format-note"><strong>Accepted:</strong> .tar.zst (worker decompressed), decompressed .tar, legacy .db, defensible v41 .chunk, and .fch/.fch.old/.fch.bak character profiles. Unknown or future versions are rejected rather than guessed. Browser limits are 128 MiB compressed input and 256 MiB decompressed tar.</p>
+        <p className="format-note"><strong>Accepted:</strong> .tar.zst (worker decompressed; a whole valheim-vault store too), decompressed .tar, legacy .db, defensible v41 .chunk, and .fch/.fch.old/.fch.bak character profiles. Unknown or future versions are rejected rather than guessed. Browser limits are 128 MiB compressed input and 256 MiB decompressed tar per backup; a vault is read snapshot by snapshot and needs memory about its zstd window (1.2 GiB for a 1 GiB window).</p>
         {queue.length > 0 && <Queue items={queue} />}
         <div className="actions">
           <button className="button primary" type="button" onClick={scan} disabled={busy || !queue.some((item) => item.status === 'queued')}>{busy ? 'Scanning…' : 'Scan queued files'}</button>
@@ -281,6 +307,8 @@ export function App() {
         </div>
       </section>
 
+      {vaultRows.length > 0 && <VaultPanel rows={vaultRows} busy={busy} onApply={selectVaultSnapshots} />}
+
       {report && <>
         <Summary report={report} />
         {report.partial && <p className="partial-banner" role="alert">Partial report: {report.failed_files?.length ?? 0} file(s) failed. Exact errors remain in the file queue and exports.</p>}
@@ -288,10 +316,12 @@ export function App() {
           <TabButton id="tab-world" active={tab === 'world'} onClick={() => setTab('world')}>World Evidence <span>{report.evidence.length}</span></TabButton>
           <TabButton id="tab-characters" active={tab === 'characters'} onClick={() => setTab('characters')}>Characters <span>{report.characters.length}</span></TabButton>
           <TabButton id="tab-timeline" active={tab === 'timeline'} onClick={() => setTab('timeline')}>Timeline <span>{report.archives.length}</span></TabButton>
+          {(report.progression?.length ?? 0) > 1 && <TabButton id="tab-progression" active={tab === 'progression'} onClick={() => setTab('progression')}>Progression <span>{report.progression!.length}</span></TabButton>}
         </nav>
-        {tab === 'world' && <WorldView report={report} id="report-world" rows={visibleEvidence} query={query} kind={kind} status={status} sortKey={sortKey} sortDirection={sortDirection} setQuery={setQuery} setKind={setKind} setStatus={setStatus} setSortKey={setSortKey} setSortDirection={setSortDirection} copy={copy} copied={copied} />}
+        {tab === 'world' && <WorldView report={report} id="report-world" rows={visibleEvidence} query={query} kind={kind} status={status} snapshot={snapshot} setSnapshot={setSnapshot} sortKey={sortKey} sortDirection={sortDirection} setQuery={setQuery} setKind={setKind} setStatus={setStatus} setSortKey={setSortKey} setSortDirection={setSortDirection} copy={copy} copied={copied} />}
         {tab === 'characters' && <CharacterView report={report} id="report-characters" onSelectCanonical={selectCanonical} />}
         {tab === 'timeline' && <TimelineView report={report} id="report-timeline" copy={copy} copied={copied} />}
+        {tab === 'progression' && <ProgressionView rows={report.progression ?? []} id="report-progression" onPick={(value) => { setSnapshot(value); setTab('world'); }} />}
         <section className="downloads panel" aria-labelledby="download-heading">
           <div><p className="eyebrow">EXPORT</p><h2 id="download-heading">Take the report with you</h2><p>Report downloads contain parsed evidence only.</p></div>
           <div className="download-actions"><button className="button" type="button" onClick={() => download('json')}>JSON</button><button className="button" type="button" onClick={() => download('csv')}>CSV</button><button className="button" type="button" onClick={() => download('md')}>Markdown</button></div>
@@ -302,6 +332,88 @@ export function App() {
       <footer><strong>Unofficial fan-made tool.</strong> Valheim is a trademark of its respective owner. No game assets, logos, fonts, or official screenshots are distributed here. This page never changes your files; the experimental scrub only creates a new copy.</footer>
     </div>
   );
+}
+
+function VaultPanel({ rows, busy, onApply }: { rows: VaultSnapshotRow[]; busy: boolean; onApply: (archives: string[]) => void }) {
+  const applied = useMemo(() => new Set(rows.filter((row) => row.included).map((row) => row.archive)), [rows]);
+  const [draft, setDraft] = useState(applied);
+  useEffect(() => setDraft(applied), [applied]);
+  const changed = draft.size !== applied.size || [...draft].some((archive) => !applied.has(archive));
+  const toggle = (archive: string, on: boolean) => setDraft((current) => {
+    const next = new Set(current);
+    if (on) next.add(archive);
+    else next.delete(archive);
+    return next;
+  });
+  const pick = (keep: (row: VaultSnapshotRow) => boolean) => setDraft(new Set(rows.filter((row) => row.selectable && keep(row)).map((row) => row.archive)));
+  return <section className="vault panel" aria-labelledby="vault-heading">
+    <div className="section-heading">
+      <div><p className="eyebrow">VAULT</p><h2 id="vault-heading">Snapshots in the report</h2></div>
+      <span className="result-count">{applied.size} of {rows.length}</span>
+    </div>
+    <p className="explanation">Every snapshot in the vault was scanned. Copies of an earlier snapshot and scrubbed copies start unticked, so the timeline follows the real backups; a snapshot without a world cannot be added. Tick the ones to compare, then update the report.</p>
+    <div className="actions">
+      <button className="button" type="button" onClick={() => pick((row) => row.note === null)}>Timeline</button>
+      <button className="button" type="button" onClick={() => pick(() => true)}>All</button>
+      <button className="button" type="button" onClick={() => pick(() => false)}>None</button>
+      <button className="button primary" type="button" disabled={busy || !changed} onClick={() => onApply(rows.filter((row) => draft.has(row.archive)).map((row) => row.archive))}>Update report ({draft.size})</button>
+    </div>
+    <ul className="vault-list">{rows.map((row) => <li key={row.archive}><label className={row.selectable ? '' : 'disabled'}>
+      <input type="checkbox" disabled={!row.selectable} checked={draft.has(row.archive)} onChange={(event) => toggle(row.archive, event.currentTarget.checked)} />
+      <span className="vault-name">{row.snapshot}</span>
+      <span className="vault-meta">{row.selectable ? `${row.zdo_count.toLocaleString()} ZDOs · ${row.flagged.toLocaleString()} flagged` : ''}</span>
+      {row.note && <span className="vault-note">{row.note}</span>}
+    </label></li>)}</ul>
+  </section>;
+}
+
+const PROGRESSION_KINDS: { key: keyof ProgressionRow; label: string; color: string }[] = [
+  { key: 'objects', label: 'Objects', color: '#d36a32' },
+  { key: 'dropped_items', label: 'Dropped items', color: '#e9b85c' },
+  { key: 'contained_items', label: 'In containers', color: '#5d9ac4' },
+  { key: 'station_queues', label: 'Station queues', color: '#8fbf7e' },
+];
+
+/** Flagged records per snapshot, stacked by kind; click a bar (or Show) to see that snapshot's rows. */
+function ProgressionView({ rows, id, onPick }: { rows: ProgressionRow[]; id: string; onPick: (snapshot: string) => void }) {
+  const peak = Math.max(1, ...rows.map((row) => row.flagged));
+  const latest = rows[rows.length - 1];
+  // Log by default: a few dozen new flags matter as much as the peak and vanish on a linear scale.
+  const [scale, setScale] = useState<'log' | 'linear'>('log');
+  const barHeight = (flagged: number) => (scale === 'log' ? Math.log1p(flagged) / Math.log1p(peak) : flagged / peak) * 96;
+  return <section id={id} className="panel" aria-labelledby="progression-heading">
+    <div className="section-heading"><div><p className="eyebrow">05 / PROGRESSION</p><h2 id="progression-heading">How the cheating spread</h2></div></div>
+    <p className="explanation">Flagged records in each snapshot, oldest first. New and Gone compare a snapshot with the one before it, matching records by kind, owner, exact position, key and item (not stack). Post-1.0.20 flags are the ones Valheim 1.0.20 and later honour; older flags stay in the save, but the game ignores them.{latest ? ` Newest: ${latest.flagged.toLocaleString()} flagged, ${latest.current_revision_flags.toLocaleString()} of them post-1.0.20.` : ''}</p>
+    <div className="map-controls" role="group" aria-label="Chart scale">
+      {([['log', 'Log scale'], ['linear', 'Linear scale']] as const).map(([value, label]) => <button key={value} type="button" className={`tab ${scale === value ? 'selected' : ''}`} aria-pressed={scale === value} onClick={() => setScale(value)}>{label}</button>)}
+    </div>
+    <figure className="progression-chart">
+      <svg viewBox={`0 0 ${rows.length * 10} 100`} preserveAspectRatio="none" role="img" aria-label={`Flagged records per snapshot, peak ${peak.toLocaleString()}`}>
+        {rows.map((row, index) => {
+          let top = 100;
+          const total = barHeight(row.flagged);
+          return <g key={row.snapshot} className="progression-bar" onClick={() => onPick(row.snapshot)}>
+            <title>{`${row.snapshot}: ${row.flagged.toLocaleString()} flagged, ${row.new.toLocaleString()} new, ${row.gone.toLocaleString()} gone`}</title>
+            <rect x={index * 10} y={0} width={10} height={100} fill="transparent" />
+            {PROGRESSION_KINDS.map((kind) => {
+              const height = row.flagged ? (Number(row[kind.key]) / row.flagged) * total : 0;
+              top -= height;
+              return height > 0 ? <rect key={kind.key} x={index * 10 + 1.5} y={top} width={7} height={height} fill={kind.color} /> : null;
+            })}
+            {row.new > 0 && <rect x={index * 10 + 1.5} y={99} width={7} height={1} fill="#fff" />}
+          </g>;
+        })}
+      </svg>
+      <figcaption>
+        <span>{rows[0]?.snapshot}</span>
+        <span className="progression-legend">{PROGRESSION_KINDS.map((kind) => <span key={kind.key}><i style={{ background: kind.color }} />{kind.label}</span>)}<span><i style={{ background: '#fff' }} />has new records</span> · peak {peak.toLocaleString()}</span>
+        <span>{latest?.snapshot}</span>
+      </figcaption>
+    </figure>
+    <div className="table-wrap"><table><thead><tr><th>Snapshot</th><th>ZDOs</th><th>Flagged</th><th>New</th><th>Gone</th>{PROGRESSION_KINDS.map((kind) => <th key={kind.key}>{kind.label}</th>)}<th>Post-1.0.20</th><th /></tr></thead>
+      <tbody>{rows.map((row) => <tr key={row.snapshot}><td>{row.snapshot}</td><td>{row.zdo_count.toLocaleString()}</td><td>{row.flagged.toLocaleString()}</td><td>{row.new.toLocaleString()}</td><td>{row.gone.toLocaleString()}</td>{PROGRESSION_KINDS.map((kind) => <td key={kind.key}>{Number(row[kind.key]).toLocaleString()}</td>)}<td>{row.current_revision_flags.toLocaleString()}</td><td><button className="button" type="button" onClick={() => onPick(row.snapshot)}>Show</button></td></tr>)}</tbody>
+    </table></div>
+  </section>;
 }
 
 type ScrubPanelProps = {
@@ -435,6 +547,8 @@ type WorldProps = {
   query: string;
   kind: string;
   status: string;
+  snapshot: string;
+  setSnapshot: (value: string) => void;
   sortKey: SortKey;
   sortDirection: 'asc' | 'desc';
   setQuery: (value: string) => void;
@@ -446,7 +560,7 @@ type WorldProps = {
   copied: string;
 };
 
-function WorldView({ report, id, rows, query, kind, status, sortKey, sortDirection, setQuery, setKind, setStatus, setSortKey, setSortDirection, copy, copied }: WorldProps) {
+function WorldView({ report, id, rows, query, kind, status, snapshot, setSnapshot, sortKey, sortDirection, setQuery, setKind, setStatus, setSortKey, setSortDirection, copy, copied }: WorldProps) {
   const sort = (key: SortKey) => {
     if (key === sortKey) setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     else { setSortKey(key); setSortDirection('asc'); }
@@ -457,11 +571,12 @@ function WorldView({ report, id, rows, query, kind, status, sortKey, sortDirecti
   const clusters = useMemo(() => (mode === 'tree' || mode === 'map' ? clusterEvidence(rows, radius) : []), [mode, rows, radius]);
   const orderedClusters = useMemo(() => (clusterOrder === 'spatial' ? spatialSort(clusters) : clusters), [clusters, clusterOrder]);
   const hint = multiArchiveHint(report.archives.length);
+  const snapshots = useMemo(() => report.archives.map((archive) => archive.snapshot), [report]);
   return <section id={id} className="panel results" aria-labelledby="world-heading">
     <div className="section-heading"><div><p className="eyebrow">02 / WORLD EVIDENCE</p><h2 id="world-heading">Parsed findings</h2></div><span className="result-count">{rows.length} of {report.evidence.length}</span></div>
     {hint && <p className="explanation multi-archive-hint">{hint}</p>}
-    <div className="filters"><label>Search<input type="search" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder="prefab, hash, coordinate, source…" /></label><label>Kind<select value={kind} onChange={(event) => setKind(event.currentTarget.value)}>{KINDS.map((value) => <option value={value} key={value}>{value === 'all' ? 'All kinds' : value}</option>)}</select></label><label>Status<select value={status} onChange={(event) => setStatus(event.currentTarget.value)}>{STATUSES.map((value) => <option value={value} key={value}>{value === 'all' ? 'All statuses' : value}</option>)}</select></label><div className="view-toggle" role="group" aria-label="Results layout"><button type="button" className={`tab ${mode === 'table' ? 'selected' : ''}`} aria-pressed={mode === 'table'} onClick={() => setMode('table')}>Table</button><button type="button" className={`tab ${mode === 'tree' ? 'selected' : ''}`} aria-pressed={mode === 'tree'} onClick={() => setMode('tree')}>By location</button><button type="button" className={`tab ${mode === 'map' ? 'selected' : ''}`} aria-pressed={mode === 'map'} onClick={() => setMode('map')}>Map</button></div>{mode === 'tree' && <label>Cluster radius<select value={radius} onChange={(event) => setRadius(Number(event.currentTarget.value))}>{CLUSTER_RADIUS_OPTIONS.map((value) => <option value={value} key={value}>{value} m</option>)}</select></label>}{mode === 'tree' && <label>Cluster order<select value={clusterOrder} onChange={(event) => setClusterOrder(event.currentTarget.value as ClusterOrder)}><option value="size">Largest first</option><option value="spatial">Nearby together</option></select></label>}</div>
-    {mode === 'tree' ? <TreeView clusters={orderedClusters} copy={copy} copied={copied} /> : mode === 'map' ? <MapView report={report} rows={rows} clusters={clusters} /> : <div className="table-wrap"><table><thead><tr><SortableHead label="Status" value="status" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Snapshot" value="snapshot" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Kind" value="kind" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Owner" value="owner_prefab_name" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Item" value="item_name" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Stack" value="stack" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Coordinates" value="x" current={sortKey} direction={sortDirection} onClick={sort} /><th>Details</th></tr></thead><tbody>{rows.map((row, index) => <EvidenceRow row={row} key={`${row.snapshot}-${row.zdo_ordinal}-${index}`} copy={copy} copied={copied} />)}</tbody></table>{rows.length === 0 && <p className="empty">No evidence matches these filters.</p>}</div>}
+    <div className="filters"><label>Search<input type="search" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder="prefab, hash, coordinate, source…" /></label><label>Kind<select value={kind} onChange={(event) => setKind(event.currentTarget.value)}>{KINDS.map((value) => <option value={value} key={value}>{value === 'all' ? 'All kinds' : value}</option>)}</select></label><label>Status<select value={status} onChange={(event) => setStatus(event.currentTarget.value)}>{STATUSES.map((value) => <option value={value} key={value}>{value === 'all' ? 'All statuses' : value}</option>)}</select></label>{snapshots.length > 1 && <label>Snapshot<select value={snapshot} onChange={(event) => setSnapshot(event.currentTarget.value)}><option value="all">All snapshots</option>{snapshots.map((value) => <option value={value} key={value}>{value}</option>)}</select></label>}<div className="view-toggle" role="group" aria-label="Results layout"><button type="button" className={`tab ${mode === 'table' ? 'selected' : ''}`} aria-pressed={mode === 'table'} onClick={() => setMode('table')}>Table</button><button type="button" className={`tab ${mode === 'tree' ? 'selected' : ''}`} aria-pressed={mode === 'tree'} onClick={() => setMode('tree')}>By location</button><button type="button" className={`tab ${mode === 'map' ? 'selected' : ''}`} aria-pressed={mode === 'map'} onClick={() => setMode('map')}>Map</button></div>{mode === 'tree' && <label>Cluster radius<select value={radius} onChange={(event) => setRadius(Number(event.currentTarget.value))}>{CLUSTER_RADIUS_OPTIONS.map((value) => <option value={value} key={value}>{value} m</option>)}</select></label>}{mode === 'tree' && <label>Cluster order<select value={clusterOrder} onChange={(event) => setClusterOrder(event.currentTarget.value as ClusterOrder)}><option value="size">Largest first</option><option value="spatial">Nearby together</option></select></label>}</div>
+    {mode === 'tree' ? <TreeView clusters={orderedClusters} copy={copy} copied={copied} /> : mode === 'map' ? <MapView report={report} rows={rows} clusters={clusters} snapshots={snapshots} snapshot={snapshot} setSnapshot={setSnapshot} /> : <div className="table-wrap"><table><thead><tr><SortableHead label="Status" value="status" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Snapshot" value="snapshot" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Kind" value="kind" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Owner" value="owner_prefab_name" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Item" value="item_name" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Stack" value="stack" current={sortKey} direction={sortDirection} onClick={sort} /><SortableHead label="Coordinates" value="x" current={sortKey} direction={sortDirection} onClick={sort} /><th>Details</th></tr></thead><tbody>{rows.slice(0, TABLE_ROW_LIMIT).map((row, index) => <EvidenceRow row={row} key={`${row.snapshot}-${row.zdo_ordinal}-${index}`} copy={copy} copied={copied} />)}</tbody></table>{rows.length === 0 && <p className="empty">No evidence matches these filters.</p>}{rows.length > TABLE_ROW_LIMIT && <p className="empty">Showing the first {TABLE_ROW_LIMIT.toLocaleString()} of {rows.length.toLocaleString()} rows. Pick one snapshot or narrow the filters to see the rest; the exports hold every row.</p>}</div>}
   </section>;
 }
 
@@ -656,7 +771,9 @@ const MAP_BADGE_RADIUS: [number, number] = [10, 24];
  * a Valheim world is. Pan/pinch/wheel and popups come from Leaflet; the density
  * layer is a one-pixel-per-cell canvas that Leaflet scales.
  */
-function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[]; clusters: TreeCluster[] }) {
+type MapViewProps = { report: Report; rows: Evidence[]; clusters: TreeCluster[]; snapshots: string[]; snapshot: string; setSnapshot: (value: string) => void };
+
+function MapView({ report, rows, clusters, snapshots, snapshot, setSnapshot }: MapViewProps) {
   const host = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
   const layers = useRef<{ density: L.ImageOverlay | null; biome: L.ImageOverlay | null; grid: L.LayerGroup | null; points: L.LayerGroup | null; groups: L.LayerGroup | null }>({ density: null, biome: null, grid: null, points: null, groups: null });
@@ -673,6 +790,15 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
   }, [cells]);
   const peak = useMemo(() => peakDensity(cells), [cells]);
   const [layerView, setLayerView] = useState<'biome' | 'density' | 'both'>('both');
+  const [colorBy, setColorBy] = useState<'status' | 'first'>('status');
+  const snapshotIndex = useMemo(() => new Map(snapshots.map((value, index) => [value, index])), [snapshots]);
+  // The colour ramp spans only the snapshots where some record first appears, oldest first.
+  const firstSeen = useMemo(() => [...new Set(report.evidence.map((row) => row.first_seen_snapshot))]
+    .sort((left, right) => (snapshotIndex.get(left) ?? 0) - (snapshotIndex.get(right) ?? 0)), [report, snapshotIndex]);
+  const firstSeenIndex = useMemo(() => new Map(firstSeen.map((value, index) => [value, index])), [firstSeen]);
+  const markerFill = (items: Evidence[]) => colorBy === 'first'
+    ? firstSeenColor(Math.max(...items.map((row) => firstSeenIndex.get(row.first_seen_snapshot) ?? 0)), firstSeen.length)
+    : statusFill(mostSevereStatus(items.map((row) => row.status)));
   const [zoom, setZoom] = useState(0);
   const cellMeters = report.map?.cell_meters || MAP_CELL_FALLBACK;
 
@@ -825,7 +951,7 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
           radius: 3.5,
           color: '#0d0d0c',
           weight: 1,
-          fillColor: statusFill(row.status),
+          fillColor: markerFill([row]),
           fillOpacity: 1,
           bubblingMouseEvents: false,
         })
@@ -838,7 +964,7 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
         radius: MAP_BADGE_RADIUS[0] + weight * (MAP_BADGE_RADIUS[1] - MAP_BADGE_RADIUS[0]),
         color: '#0d0d0c',
         weight: 1.5,
-        fillColor: statusFill(mostSevereStatus(bucket.items.map((row) => row.status))),
+        fillColor: markerFill(bucket.items),
         fillOpacity: 0.85,
         bubblingMouseEvents: false,
       }).bindPopup(() => pixelBadgePopup(bucket.items));
@@ -849,7 +975,8 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
     }
     points.addTo(instance);
     layers.current.points = points;
-  }, [rows, zoom]);
+    // markerFill reads only colorBy and snapshotIndex.
+  }, [rows, zoom, colorBy, firstSeenIndex]);
 
   useEffect(() => {
     const instance = map.current;
@@ -885,7 +1012,15 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
       {([['both', 'Biome + density'], ['biome', 'Biome'], ['density', 'Density']] as const).map(([value, label]) => (
         <button key={value} type="button" className={`tab ${layerView === value ? 'selected' : ''}`} aria-pressed={layerView === value} onClick={() => setLayerView(value)}>{label}</button>
       ))}
+      {snapshots.length > 1 && ([['status', 'Colour: status'], ['first', 'Colour: first seen']] as const).map(([value, label]) => (
+        <button key={value} type="button" className={`tab ${colorBy === value ? 'selected' : ''}`} aria-pressed={colorBy === value} onClick={() => setColorBy(value)}>{label}</button>
+      ))}
     </div>
+    {snapshots.length > 1 && <div className="map-time" role="group" aria-label="Snapshot shown on the map">
+      <label><input type="checkbox" checked={snapshot === 'all'} onChange={(event) => setSnapshot(event.currentTarget.checked ? 'all' : snapshots[snapshots.length - 1])} /> All snapshots</label>
+      <input type="range" aria-label="Snapshot" min={0} max={snapshots.length - 1} step={1} disabled={snapshot === 'all'} value={snapshotIndex.get(snapshot) ?? snapshots.length - 1} onInput={(event) => setSnapshot(snapshots[Number(event.currentTarget.value)])} />
+      <output>{snapshot === 'all' ? `every snapshot (${snapshots.length})` : snapshot}</output>
+    </div>}
     <div className="map-legend">
       {biomeNames.length > 0 && layerView !== 'density' && <p className="map-biomes">{biomeNames.map((name, index) => <span key={name}><i style={{ background: biomeColor(index) }} />{name} ({biomes.filter(([, , cell]) => cell === index).length})</span>)}</p>}
       {biomeNames.length > 0 && <p><strong>Biomes</strong> are inferred from what the save actually contains — creatures, structures and plants the game tags with a biome. A {cellMeters} m cell is only coloured when its objects supply at least three single-biome objects' worth of weighted evidence and a 60% share for one biome; thinner cells stay blank, so undeveloped, ocean and unexplored ground is never guessed. Click any cell (coloured or not) to see the vote counts behind it.</p>}
@@ -894,6 +1029,7 @@ function MapView({ report, rows, clusters }: { report: Report; rows: Evidence[];
         <div className="map-density-ticks">{densityTickCounts(peak).map((count, index) => <span key={index}>{count.toLocaleString()}</span>)}</div>
       </div>}
       <p><strong>Density</strong> is the ZDO count per {cellMeters} m cell in the newest save, log-scaled from indigo (sparse) to red (the densest cell, {peak.toLocaleString()} ZDOs), so it shows where the world actually has content. Terrain is not stored in a save, so this is a content map, not satellite imagery.</p>
+      {colorBy === 'first' && snapshots.length > 1 && <div className="map-first-seen"><span>{firstSeen[0]}</span><div style={{ background: firstSeenGradientCss() }} /><span>{firstSeen[firstSeen.length - 1]}</span><p>Markers are coloured by the snapshot a record was first seen in, across the {firstSeen.length} snapshots where flags first appear; a badge takes its most recent record's colour. Drag the slider to step through the snapshots and watch the flags appear.</p></div>}
       <p className="map-keys"><span className="map-key map-key-cluster" />cluster (click for contents) <span className="map-key map-key-badge" />N = dense stack, click to list <span className="map-key map-key-new" />new <span className="map-key map-key-persisted" />persisted <span className="map-key map-key-removed" />removed / cleared</p>
       <p className="map-hint">Drag to pan · scroll or pinch to zoom · click any marker, badge, or cell to see what is there · dashed lines are a {GRID_STEP_METERS} m metre grid.</p>
     </div>

@@ -106,6 +106,21 @@ export type WorldMap = {
   biome_detail?: [number, number, number, number, number, string, [number, number][]][];
 };
 
+/** One snapshot's line in the progression: flagged records and how they changed since the one before. */
+export type ProgressionRow = {
+  snapshot: string;
+  zdo_count: number;
+  flagged: number;
+  new: number;
+  gone: number;
+  objects: number;
+  dropped_items: number;
+  contained_items: number;
+  station_queues: number;
+  /** Flags Valheim 1.0.20+ honours (`cheat_revision` 2). */
+  current_revision_flags: number;
+};
+
 export type Report = {
   tool: string;
   schema_version: number;
@@ -124,6 +139,8 @@ export type Report = {
     character_count: number;
   };
   archives: Archive[];
+  /** Per snapshot, oldest first; absent from reports made before it existed. */
+  progression?: ProgressionRow[];
   evidence: Evidence[];
   characters: Character[];
   /** Present on reports produced by a scanner build that emits world density. */

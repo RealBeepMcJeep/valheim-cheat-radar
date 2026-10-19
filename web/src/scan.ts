@@ -8,6 +8,42 @@ export type ScanStage = 'reading' | 'decompressing' | 'parsing' | 'scrubbing' | 
 export type ScanProgress = { stage: ScanStage; percent: number; message: string };
 export type FailedFile = { name: string; error: string };
 export type FinalReport = { json: string; csv: string; markdown: string };
+/** One snapshot of a valheim-vault store, as the worker lists it for the page's picker. */
+export type VaultSnapshotRow = {
+  archive: string;
+  snapshot: string;
+  /** In the report now. Starts true for snapshots on the timeline. */
+  included: boolean;
+  /** False for a snapshot that holds no world: listed, never scanned into the report. */
+  selectable: boolean;
+  /** Why it starts left out: no world, a duplicate of an earlier snapshot, or a scrubbed copy. */
+  note: string | null;
+  zdo_count: number;
+  flagged: number;
+};
+
+/**
+ * Above this zstd window the worker hands a `.tar.zst` to the Rust decoder: fzstd copies its whole
+ * window for every block, which a vault's 1 GiB window makes hopeless. Host backups use 2 MiB.
+ */
+export const LONG_WINDOW_BYTES = 8 * 1024 * 1024;
+
+/** The window a zstd frame declares (RFC 8878, frame header), or 0 when this is no zstd frame. */
+export function zstdWindowBytes(bytes: Uint8Array): number {
+  if (bytes.length < 6 || bytes[0] !== 0x28 || bytes[1] !== 0xb5 || bytes[2] !== 0x2f || bytes[3] !== 0xfd) return 0;
+  const descriptor = bytes[4];
+  if (descriptor & 0x20) {
+    // Single segment: no window descriptor; the window is the content size.
+    const sizeBytes = [1, 2, 4, 8][descriptor >> 6];
+    const start = 5 + [0, 1, 2, 4][descriptor & 3];
+    let size = 0;
+    for (let index = sizeBytes - 1; index >= 0; index -= 1) size = size * 256 + (bytes[start + index] ?? 0);
+    return sizeBytes === 2 ? size + 256 : size;
+  }
+  const base = 2 ** (10 + (bytes[5] >> 3));
+  return base + (base / 8) * (bytes[5] & 7);
+}
+
 /** A scrubbed copy in the input file's format, with the audit of everything the scrub did. */
 export type ScrubResult = { name: string; mode: ScrubMode; bytes: ArrayBuffer; auditJson: string; auditMarkdown: string; zdoCountBefore: number; zdoCountAfter: number };
 
@@ -36,12 +72,13 @@ type WorkerRequestBody =
   | { type: 'scrub'; name: string; mode: ScrubMode; buffer: ArrayBuffer }
   | { type: 'wasm'; bytes: ArrayBuffer }
   | { type: 'canonical'; index: number }
+  | { type: 'select'; archives: string[] }
   | { type: 'report'; failures: FailedFile[] };
 export type WorkerRequest = WorkerRequestBody & { id: number };
 
 export type WorkerResponseBody =
   | { type: 'progress'; progress: ScanProgress }
-  | { type: 'scanned' }
+  | { type: 'scanned'; vault?: VaultSnapshotRow[] }
   | { type: 'report'; report: FinalReport }
   | { type: 'scrubbed'; result: ScrubResult }
   | { type: 'error'; message: string };
@@ -56,7 +93,7 @@ export interface ScannerWorkerLike {
 }
 
 type Pending = {
-  resolve: (value: void | FinalReport | ScrubResult) => void;
+  resolve: (value: void | FinalReport | ScrubResult | VaultSnapshotRow[]) => void;
   reject: (error: Error) => void;
   onProgress?: (progress: ScanProgress) => void;
 };
@@ -79,7 +116,8 @@ export class ScannerWorkerClient {
     this.workerFactory = workerFactory;
   }
 
-  async scanFile(file: File, onProgress?: (progress: ScanProgress) => void, inputId = 0): Promise<void> {
+  /** Resolves with the snapshot list when the file was a valheim-vault store. */
+  async scanFile(file: File, onProgress?: (progress: ScanProgress) => void, inputId = 0): Promise<VaultSnapshotRow[] | undefined> {
     if (file.size > MAX_FILE_BYTES) {
       throw new Error(`file is too large (${formatBytes(file.size)}; limit ${MAX_FILE_BYTES / 1048576} MiB)`);
     }
@@ -96,7 +134,7 @@ export class ScannerWorkerClient {
       },
       [buffer],
       onProgress,
-    ) as Promise<void>;
+    ) as Promise<VaultSnapshotRow[] | undefined>;
   }
 
   async scrubFile(file: File, mode: ScrubMode, onProgress?: (progress: ScanProgress) => void): Promise<ScrubResult> {
@@ -111,6 +149,11 @@ export class ScannerWorkerClient {
 
   setCanonical(index: number): Promise<void> {
     return this.send({ type: 'canonical', index }) as Promise<void>;
+  }
+
+  /** Includes exactly these vault snapshots (by archive name) in the report; other vault snapshots are left out. */
+  selectVaultArchives(archives: string[]): Promise<void> {
+    return this.send({ type: 'select', archives }) as Promise<void>;
   }
 
   report(failures: FailedFile[] = []): Promise<FinalReport> {
@@ -151,11 +194,11 @@ export class ScannerWorkerClient {
     return worker;
   }
 
-  private send(request: WorkerRequestBody, transfer: Transferable[] = [], onProgress?: (progress: ScanProgress) => void): Promise<void | FinalReport | ScrubResult> {
+  private send(request: WorkerRequestBody, transfer: Transferable[] = [], onProgress?: (progress: ScanProgress) => void): Promise<void | FinalReport | ScrubResult | VaultSnapshotRow[]> {
     const worker = this.ensureWorker();
     const id = this.nextRequestId++;
     const message: WorkerRequest = { ...request, id };
-    return new Promise<void | FinalReport | ScrubResult>((resolve, reject) => {
+    return new Promise<void | FinalReport | ScrubResult | VaultSnapshotRow[]>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, onProgress });
       try {
         worker.postMessage(message, transfer);
@@ -176,7 +219,7 @@ export class ScannerWorkerClient {
     }
     this.pending.delete(response.id);
     if (response.type === 'error') pending.reject(new Error(response.message));
-    else if (response.type === 'scanned') pending.resolve();
+    else if (response.type === 'scanned') pending.resolve(response.vault);
     else if (response.type === 'scrubbed') pending.resolve(response.result);
     else pending.resolve(response.report);
   }

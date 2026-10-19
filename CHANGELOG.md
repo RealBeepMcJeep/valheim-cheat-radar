@@ -9,7 +9,8 @@
   layout, and changed what a flag means: it only honours a `cheated` value of 2 and the cheated bit of
   item data at version 110+, ignoring older flags that stay in the save. Both versions are read now,
   and every piece of evidence carries `cheat_revision` (2 = honoured by 1.0.20+, 1 = an older flag).
-  Character files from 1.0.20 (profile 47, player data 34) are still reported as unsupported.
+  Character files from 1.0.20 (profile 47, same layout as 46; player data 34, which adds two trailing
+  int-to-int dictionaries) are read too; both of the owner's 1.0.20 profiles parse as trusted.
 - The game's other backup folders (any `<world>_backup_...`, e.g. the one 1.0.20 takes before first
   saving an older world, `Dedicated_backup_20261015-100220`) were added to the live world like the
   automatic ones had been. All `_backup_` folders are now treated as backups; the JSON field is
@@ -41,6 +42,19 @@
 
 ### Added
 
+- **Vault ingest (browser):** drop a valheim-vault `.tar.zst` on the page and every snapshot is
+  scanned in one pass (the owner's 44-snapshot vault: about 15 s, 1.2 GiB of WASM memory, which is
+  the vault's 1 GiB zstd window). A picker lists the snapshots with their ZDO and flag counts;
+  duplicates and scrubbed copies start unticked and a snapshot without a world cannot be added, and
+  "Update report" re-runs the report on the ticked ones. Long-window files are decoded in Rust
+  (`ruzstd`), since neither JS decoder can stream a 1 GiB window. No change to the vault format is
+  needed.
+- **Progression view (browser):** a Progression tab with flagged records per snapshot, stacked by
+  kind on a log or linear scale, and the New / Gone / post-1.0.20 table (also in the browser's JSON
+  and Markdown exports); a bar or row jumps to that snapshot's evidence. World Evidence gains a
+  Snapshot filter, which a large multi-snapshot report starts on the newest snapshot, and the table
+  renders at most 2,000 rows. The map gets a snapshot slider and can colour markers by the snapshot
+  each record was first seen in.
 - **Vault ingest (CLI):** `--vault valheim-backups.tar.zst` scans every snapshot of a valheim-vault
   store as a timeline archive in one pass. Hardlinked (deduplicated) chunks reuse the parse of their
   stored copy, so the owner's 44-snapshot vault (5.4 GB if exported) scans in about 6 seconds;

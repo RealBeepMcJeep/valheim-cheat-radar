@@ -19,6 +19,10 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # does not expose zstd's content-checksum switch; the XXH64 checksum a host's backup carries is
 # added here instead. Pure Rust so it compiles into the same WASM module.
 twox-hash = { version = "2", default-features = false, features = ["xxhash64"] }
+# A valheim-vault store is one zstd frame with a 1 GiB window. The browser has no zstd binary and
+# its JS decoders either refuse that window (@hpcc-js caps it at 128 MiB) or copy the whole window
+# per block (fzstd), so the WASM module decodes vaults itself. Pure Rust.
+ruzstd = "0.9.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.92"

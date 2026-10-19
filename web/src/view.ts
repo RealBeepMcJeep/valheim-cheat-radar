@@ -1,8 +1,12 @@
-import type { Evidence, SortKey } from './types';
+import type { Evidence, Report, SortKey } from './types';
 
-export function filterEvidence(rows: Evidence[], query: string, kind: string, status: string): Evidence[] {
+/** The table renders at most this many rows; a whole vault holds thousands per snapshot set. */
+export const TABLE_ROW_LIMIT = 2000;
+
+export function filterEvidence(rows: Evidence[], query: string, kind: string, status: string, snapshot = 'all'): Evidence[] {
   const needle = query.trim().toLocaleLowerCase();
   return rows.filter((row) => {
+    if (snapshot !== 'all' && row.snapshot !== snapshot) return false;
     if (kind !== 'all' && row.kind !== kind) return false;
     if (status !== 'all' && row.status !== status) return false;
     if (!needle) return true;
@@ -51,6 +55,16 @@ function valueFor(row: Evidence, key: SortKey): string | number {
     case 'kind': return row.kind;
     case 'status': return row.status;
   }
+}
+
+/**
+ * The snapshot filter for a new report: the current choice while the report still has it, else the
+ * newest snapshot when showing every snapshot's rows would be too many to read, else all of them.
+ */
+export function defaultSnapshotFilter(report: Report, current: string): string {
+  const snapshots = report.archives.map((archive) => archive.snapshot);
+  if (current !== 'all' && snapshots.includes(current)) return current;
+  return report.evidence.length > TABLE_ROW_LIMIT && snapshots.length > 1 ? snapshots[snapshots.length - 1] : 'all';
 }
 
 /** Shown only with exactly one world archive loaded — the case where status classification is a no-op. */

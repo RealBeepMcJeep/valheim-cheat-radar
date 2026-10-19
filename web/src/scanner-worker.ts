@@ -3,7 +3,7 @@ import { Decompress } from 'fzstd';
 import init, { BrowserScanner, zstd_add_checksum } from '../wasm/pkg/valheim_backup_cheat_scanner.js';
 import { errorMessage } from './errors';
 import type { ScrubMode } from './scrub';
-import { MAX_DECOMPRESSED_BYTES, MAX_FILE_BYTES, scrubKind, scrubbedName, type FailedFile, type FinalReport, type ScanProgress, type ScrubResult, type WorkerRequest, type WorkerResponse, type WorkerResponseBody } from './scan';
+import { LONG_WINDOW_BYTES, MAX_DECOMPRESSED_BYTES, MAX_FILE_BYTES, scrubKind, scrubbedName, zstdWindowBytes, type VaultSnapshotRow, type FailedFile, type FinalReport, type ScanProgress, type ScrubResult, type WorkerRequest, type WorkerResponse, type WorkerResponseBody } from './scan';
 
 const COMPRESSED_CHUNK_BYTES = 1024 * 1024;
 // SAFETY: this module is only ever loaded as a dedicated module Worker, where
@@ -131,14 +131,21 @@ function decompressStreaming(buffer: ArrayBuffer, id: number, label = 'decompres
   return output.buffer;
 }
 
-async function scan(id: number, name: string, buffer: ArrayBuffer, modifiedUnixMillis: number, inputId: number): Promise<void> {
+async function scan(id: number, name: string, buffer: ArrayBuffer, modifiedUnixMillis: number, inputId: number): Promise<VaultSnapshotRow[] | undefined> {
   if (buffer.byteLength > MAX_FILE_BYTES) {
     throw new Error(`file is too large (${Math.ceil(buffer.byteLength / 1048576)} MiB; limit ${MAX_FILE_BYTES / 1048576} MiB)`);
   }
   const scanner = await getScanner();
   post(id, { type: 'progress', progress: { stage: 'reading', percent: 1, message: 'reading file' } satisfies ScanProgress });
   let bytes = buffer;
-  if (/\.tar\.zst$/i.test(name)) {
+  let vault: VaultSnapshotRow[] | undefined;
+  if (/\.tar\.zst$/i.test(name) && zstdWindowBytes(new Uint8Array(buffer)) > LONG_WINDOW_BYTES) {
+    // A valheim-vault store (or a backup recompressed with a long window): Rust decodes and scans
+    // it in one pass, holding only the zstd window.
+    post(id, { type: 'progress', progress: { stage: 'parsing', percent: 10, message: 'reading every snapshot (large zstd window; this takes a while)' } satisfies ScanProgress });
+    const result = scanner.add_long_window_zst(name, new Uint8Array(buffer));
+    if (result !== 'null') vault = JSON.parse(result) as VaultSnapshotRow[];
+  } else if (/\.tar\.zst$/i.test(name)) {
     post(id, { type: 'progress', progress: { stage: 'decompressing', percent: 5, message: 'decompressing' } satisfies ScanProgress });
     bytes = decompressStreaming(buffer, id);
     post(id, { type: 'progress', progress: { stage: 'parsing', percent: 40, message: 'parsing decompressed tar' } satisfies ScanProgress });
@@ -148,6 +155,7 @@ async function scan(id: number, name: string, buffer: ArrayBuffer, modifiedUnixM
     scanner.add_file_with_metadata(name, new Uint8Array(bytes), modifiedUnixMillis, inputId);
   }
   post(id, { type: 'progress', progress: { stage: 'complete', percent: 100, message: 'complete' } satisfies ScanProgress });
+  return vault;
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -208,13 +216,19 @@ function handle(request: WorkerRequest): Promise<void> {
   if (request.type === 'report') return report(request.id, request.failures);
   if (request.type === 'canonical') return canonical(request.id, request.index);
   if (request.type === 'wasm') return Promise.resolve();
+  if (request.type === 'select') {
+    return getScanner()
+      .then((scanner) => scanner.select_vault_archives(request.archives.join('\n')))
+      .then(() => post(request.id, { type: 'scanned' }))
+      .catch((error: unknown) => post(request.id, { type: 'error', message: errorMessage(error) }));
+  }
   if (request.type === 'scrub') {
     return scrub(request.id, request.name, request.mode, request.buffer)
       .then((result) => post(request.id, { type: 'scrubbed', result }, [result.bytes]))
       .catch((error: unknown) => post(request.id, { type: 'error', message: errorMessage(error) }));
   }
   return scan(request.id, request.name, request.buffer, request.modifiedUnixMillis, request.inputId)
-    .then(() => post(request.id, { type: 'scanned' }))
+    .then((vault) => post(request.id, vault ? { type: 'scanned', vault } : { type: 'scanned' }))
     .catch((error: unknown) => post(request.id, { type: 'error', message: errorMessage(error) }));
 }
 

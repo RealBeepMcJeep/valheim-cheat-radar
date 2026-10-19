@@ -254,3 +254,25 @@ footer strong { color: var(--bone); }
 .scrub-modes span, .scrub-summary span { color: var(--muted); font-size: .9rem; }
 .scrub-summary { display: grid; gap: .3rem; margin: .6rem 0; padding-left: 1.2rem; }
 .scrub-warnings { background: rgba(184,74,55,.12); border-left: 3px solid var(--red); color: #f19b88; display: grid; font-size: .9rem; gap: .3rem; margin: .6rem 0; padding: .6rem .8rem .6rem 1.8rem; }
+
+.vault-list { columns: 3 18rem; column-gap: 1.5rem; list-style: none; margin: 1rem 0 0; padding: 0; }
+.vault-list li { break-inside: avoid; padding: .2rem 0; }
+.vault-list label { align-items: baseline; display: flex; flex-wrap: wrap; gap: .45rem; }
+.vault-list label.disabled { color: var(--muted); cursor: default; }
+.vault-name { font: .82rem ui-monospace, monospace; }
+.vault-meta, .vault-note { color: var(--muted); font: .7rem ui-monospace, monospace; }
+.vault-note { color: var(--ember-bright); }
+.progression-chart { margin: 1rem 0 1.5rem; }
+.progression-chart svg { background: var(--panel-hi); border: 1px solid var(--line); display: block; height: 220px; width: 100%; }
+.progression-bar { cursor: pointer; }
+.progression-bar:hover rect:first-of-type { fill: rgba(230, 220, 203, .08); }
+.progression-chart figcaption { color: var(--muted); display: flex; flex-wrap: wrap; font: .7rem ui-monospace, monospace; gap: .8rem; justify-content: space-between; margin-top: .4rem; }
+.progression-legend { display: flex; flex-wrap: wrap; gap: .8rem; }
+.progression-legend i, .map-first-seen div { display: inline-block; height: .6rem; margin-right: .3rem; width: .6rem; }
+.map-time { align-items: center; display: flex; flex-wrap: wrap; gap: .8rem; margin-bottom: .6rem; }
+.map-time label { align-items: center; color: var(--muted); display: flex; font: .72rem ui-monospace, monospace; gap: .4rem; }
+.map-time input[type=range] { flex: 1 1 14rem; }
+.map-time output { font: .8rem ui-monospace, monospace; min-width: 12rem; }
+.map-first-seen { align-items: center; display: flex; flex-wrap: wrap; font: .7rem ui-monospace, monospace; gap: .5rem; }
+.map-first-seen div { flex: 1 1 8rem; height: .6rem; }
+.map-first-seen p { flex-basis: 100%; }

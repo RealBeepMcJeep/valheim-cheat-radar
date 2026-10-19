@@ -1,7 +1,6 @@
 use flate2::read::GzDecoder;
 use std::collections::HashMap;
 use std::fmt;
-#[cfg(not(target_arch = "wasm32"))]
 use std::io::BufReader;
 use std::io::{self, Read};
 #[cfg(not(target_arch = "wasm32"))]
@@ -718,7 +717,7 @@ fn parse_character_profile(payload: &[u8]) -> Result<CharacterScan, ScanError> {
     let profile_version = cursor.i32()?;
     let stat_slots = cursor.i32()?;
     let stat_profiles = cursor.i32()?;
-    if profile_version != 46 || stat_slots != 205 || stat_profiles != 10 {
+    if !matches!(profile_version, 46 | 47) || stat_slots != 205 || stat_profiles != 10 {
         return Err(error(format!(
             "unsupported character profile header {profile_version}/{stat_slots}/{stat_profiles}"
         )));
@@ -838,7 +837,7 @@ struct PlayerDataSummary {
 fn parse_character_player_data(data: &[u8]) -> Result<PlayerDataSummary, ScanError> {
     let mut cursor = Cursor::new(data);
     let version = cursor.i32()?;
-    if version != 33 {
+    if !matches!(version, 33 | 34) {
         return Err(error(format!("unsupported playerData version {version}")));
     }
     for _ in 0..4 {
@@ -912,6 +911,15 @@ fn parse_character_player_data(data: &[u8]) -> Result<PlayerDataSummary, ScanErr
     cursor.f32()?;
     cursor.f32()?;
     cursor.byte_array()?;
+    if version >= 34 {
+        // Valheim 1.0.20: drop pseudo-random counters, then item upgrade seeds (int -> int each).
+        for what in ["drop counters", "item upgrade seeds"] {
+            for _ in 0..character_count(&mut cursor, what)? {
+                cursor.i32()?;
+                cursor.i32()?;
+            }
+        }
+    }
     if cursor.position != data.len() {
         return Err(error(format!(
             "playerData has {} trailing bytes",
@@ -2942,6 +2950,109 @@ pub fn scan_vault_reader<R: Read>(
     vault.finish()
 }
 
+/// valheim-vault writes one zstd frame with a window of at most 1 GiB (`--long=30`).
+const MAX_VAULT_WINDOW_BYTES: u64 = 1 << 30;
+/// The browser's ceiling on one decompressed backup tar; matches `MAX_DECOMPRESSED_BYTES` in
+/// `web/src/scan.ts`.
+const MAX_BROWSER_TAR_BYTES: u64 = 256 * 1024 * 1024;
+
+/// What a long-window `.tar.zst` turned out to hold.
+pub enum LongWindowZst {
+    Vault(Vec<VaultSnapshot>),
+    /// One host backup, decompressed.
+    Backup(Vec<u8>),
+}
+
+/// Whether a tar's first entry sits in a dated snapshot folder (`2026-09-08/SaveDir/...`), as a
+/// valheim-vault store's do; a host backup's start at the top (`SaveDir/...`).
+fn is_vault_tar_head(head: &[u8]) -> bool {
+    let Ok(Some(header)) = TarStream::new(head).next_header() else {
+        return false;
+    };
+    let top = header
+        .path()
+        .split(|byte| *byte == b'/')
+        .next()
+        .unwrap_or_default();
+    top.len() >= 10
+        && top[..10].iter().enumerate().all(|(index, byte)| {
+            if index == 4 || index == 7 {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_digit()
+            }
+        })
+}
+
+/// Reads a `.tar.zst` held in memory whose zstd window is too large for the browser's JS decoders
+/// (a vault's is 1 GiB: one refuses it, the other copies the whole window for every block), with a
+/// pure-Rust zstd. A vault is scanned as it streams; anything else is returned decompressed.
+pub fn read_long_window_zst(
+    compressed: &[u8],
+    name: &str,
+    prefabs: &PrefabNames,
+) -> Result<LongWindowZst, ScanError> {
+    let zstd_error = |e: ruzstd::decoding::errors::FrameDecoderError| {
+        error(format!("{name}: cannot read zstd frame: {e}"))
+    };
+    let mut frame = ruzstd::decoding::FrameDecoder::new();
+    frame.set_max_window_size(MAX_VAULT_WINDOW_BYTES);
+    // Only a reset of an initialised decoder reserves the whole window at once; otherwise its
+    // buffer doubles its way up, and in WASM the outgrown copies stay allocated (2 GiB for a vault
+    // instead of 1). Each call reads the header from its own copy of the slice.
+    frame.init(compressed).map_err(zstd_error)?;
+    frame.reset(compressed).map_err(zstd_error)?;
+    let mut decoder = ruzstd::decoding::StreamingDecoder::new_with_decoder(compressed, frame)
+        .map_err(zstd_error)?;
+    // Reads of at most one block: the decoder then holds the window plus two blocks, which its
+    // buffer is sized for. Larger reads make it double, a second GiB for a vault.
+    let mut reader = BufReader::with_capacity(64 * 1024, &mut decoder);
+    let head = io::BufRead::fill_buf(&mut reader).map_err(ScanError::from)?;
+    let result = if is_vault_tar_head(head) {
+        LongWindowZst::Vault(scan_vault_reader(&mut reader, name, prefabs)?)
+    } else {
+        let mut tar = Vec::new();
+        (&mut reader)
+            .take(MAX_BROWSER_TAR_BYTES + 1)
+            .read_to_end(&mut tar)
+            .map_err(ScanError::from)?;
+        if tar.len() as u64 > MAX_BROWSER_TAR_BYTES {
+            return Err(error(format!(
+                "{name}: decompressed tar exceeds {} MiB",
+                MAX_BROWSER_TAR_BYTES >> 20
+            )));
+        }
+        LongWindowZst::Backup(tar)
+    };
+    drop(reader);
+    let frame = &decoder.decoder;
+    if !frame.is_finished() {
+        return Err(error(format!("{name} ends inside its zstd frame")));
+    }
+    if let Some(stored) = frame.get_checksum_from_data() {
+        if frame.get_calculated_checksum() != Some(stored) {
+            return Err(error(format!("{name} fails its zstd checksum")));
+        }
+    }
+    if !decoder.get_ref().is_empty() {
+        return Err(error(format!("{name} holds data after its zstd frame")));
+    }
+    Ok(result)
+}
+
+/// Why a vault snapshot is not a point on the world's timeline by default, if it is not.
+pub fn vault_snapshot_note(snapshot: &VaultSnapshot) -> Option<String> {
+    if snapshot.scan.format == "metadata_only_incomplete" {
+        Some("holds no world".to_string())
+    } else if let Some(original) = &snapshot.duplicate_of {
+        Some(format!("the same backup as {original}"))
+    } else if snapshot.scrubbed {
+        Some("a scrubbed copy".to_string())
+    } else {
+        None
+    }
+}
+
 /// Scans a vault file on disk. Its zstd window can be up to 2 GiB (older vaults), so zstd is told
 /// to allow that.
 #[cfg(not(target_arch = "wasm32"))]
@@ -4627,14 +4738,9 @@ pub fn scan_vault_archives(
     let mut archives = Vec::new();
     let mut skipped = Vec::new();
     for snapshot in scan_vault(vault_path, zstd_program, &prefabs)? {
-        if snapshot.scan.format == "metadata_only_incomplete" {
-            skipped.push(format!("{} (holds no world)", snapshot.name));
-        } else if let Some(original) = &snapshot.duplicate_of {
-            skipped.push(format!("{} (the same backup as {original})", snapshot.name));
-        } else if snapshot.scrubbed {
-            skipped.push(format!("{} (a scrubbed copy)", snapshot.name));
-        } else {
-            archives.push(snapshot.scan);
+        match vault_snapshot_note(&snapshot) {
+            Some(note) => skipped.push(format!("{} ({note})", snapshot.name)),
+            None => archives.push(snapshot.scan),
         }
     }
     archives.sort_by(|left, right| left.snapshot.cmp(&right.snapshot));
@@ -4887,6 +4993,30 @@ fn progression_json(archives: &[ArchiveScan]) -> String {
         })
         .collect::<Vec<_>>()
         .join(",\n    ")
+}
+
+/// The Progression section of both Markdown reports; empty with fewer than two snapshots.
+fn progression_markdown(archives: &[ArchiveScan]) -> String {
+    let mut output = String::new();
+    if archives.len() > 1 {
+        output.push_str("\n## Progression\n\nNew and Gone compare each snapshot with the one before it, matching records by kind, owner, exact position, key and item (not stack). Post-1.0.20 flags are the ones Valheim 1.0.20 and later honour; older flags stay in the save, but the game ignores them.\n\n| Snapshot | ZDOs | Flagged | New | Gone | Objects | Dropped items | In containers | Station queues | Post-1.0.20 flags |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+        for row in progression(archives) {
+            output.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                browser_md_cell(row.snapshot),
+                row.zdo_count,
+                row.flagged,
+                row.new,
+                row.gone,
+                row.objects,
+                row.dropped,
+                row.contained,
+                row.queued,
+                row.current,
+            ));
+        }
+    }
+    output
 }
 
 fn evidence_key(evidence: &Evidence) -> String {
@@ -5500,24 +5630,7 @@ fn report_markdown_with_characters(
             ));
         }
     }
-    if archives.len() > 1 {
-        output.push_str("\n## Progression\n\nNew and Gone compare each snapshot with the one before it, matching records by kind, owner, exact position, key and item (not stack). Post-1.0.20 flags are the ones Valheim 1.0.20 and later honour; older flags stay in the save, but the game ignores them.\n\n| Snapshot | ZDOs | Flagged | New | Gone | Objects | Dropped items | In containers | Station queues | Post-1.0.20 flags |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
-        for row in progression(archives) {
-            output.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                row.snapshot,
-                row.zdo_count,
-                row.flagged,
-                row.new,
-                row.gone,
-                row.objects,
-                row.dropped,
-                row.contained,
-                row.queued,
-                row.current,
-            ));
-        }
-    }
+    output.push_str(&progression_markdown(archives));
     if let Some(latest) = latest {
         if !latest.biomes.is_empty() {
             let mut histogram = [0usize; BIOME_COUNT];
@@ -6123,10 +6236,10 @@ pub fn browser_report_json(archives: &[ArchiveScan], characters: &[CharacterScan
         .join(",");
     let map_json = browser_map_json(archives);
     format!(
-        "{{\"tool\":\"Valheim Cheat Radar\",\"schema_version\":1,\"read_only\":true,\"summary\":{{\"archive_count\":{},\"zdo_count\":{},\"decoded_item_count\":{},\"item_count\":{},\"direct_item_count\":{},\"container_item_count\":{},\"indexed_item_count\":{},\"zdo_cheated_count\":{},\"station_queued_cheated_count\":{},\"evidence_records\":{},\"character_count\":{}}},\"archives\":[{}],\"evidence\":[{}],\"characters\":[{}],\"map\":{},\"timeline_note\":\"Ordering follows deterministic file names/snapshot IDs. Evidence identity excludes stack and uses parsed prefab, position, key, item, slot, quality, variant, crafter, and world-level fields; comparisons are approximate because saves do not provide a universal ZDO creation timestamp.\"}}",
+        "{{\"tool\":\"Valheim Cheat Radar\",\"schema_version\":1,\"read_only\":true,\"summary\":{{\"archive_count\":{},\"zdo_count\":{},\"decoded_item_count\":{},\"item_count\":{},\"direct_item_count\":{},\"container_item_count\":{},\"indexed_item_count\":{},\"zdo_cheated_count\":{},\"station_queued_cheated_count\":{},\"evidence_records\":{},\"character_count\":{}}},\"archives\":[{}],\"progression\":[{}],\"evidence\":[{}],\"characters\":[{}],\"map\":{},\"timeline_note\":\"Ordering follows deterministic file names/snapshot IDs. Evidence identity excludes stack and uses parsed prefab, position, key, item, slot, quality, variant, crafter, and world-level fields; comparisons are approximate because saves do not provide a universal ZDO creation timestamp.\"}}",
         archives.len(), totals.0, decoded_total, totals.1, totals.2, totals.3, totals.4, totals.5,
-        totals.6, totals.1 + totals.5 + totals.6, characters.len(), archive_json, evidence_json,
-        character_json, map_json
+        totals.6, totals.1 + totals.5 + totals.6, characters.len(), archive_json,
+        progression_json(archives), evidence_json, character_json, map_json
     )
 }
 
@@ -6387,6 +6500,7 @@ pub fn browser_report_markdown(archives: &[ArchiveScan], characters: &[Character
             archive.item_count + archive.zdo_cheated_count + archive.station_queued_cheated_count
         ));
     }
+    output.push_str(&progression_markdown(archives));
     output.push_str("\n## World evidence\n\n| Status | First seen | Last seen | Present in latest | Occurrence | Snapshot | Kind | Owner | Item | Crafter | Stack | Path | X | Y | Z |\n|---|---|---|---:|---:|---|---|---|---|---|---:|---|---:|---:|---:|\n");
     for (archive_index, archive) in archives.iter().enumerate() {
         for (evidence_index, evidence) in archive.evidence.iter().enumerate() {
@@ -6500,6 +6614,10 @@ pub fn zstd_add_checksum(frame: &[u8], content: &[u8]) -> Result<Vec<u8>, JsValu
 pub struct BrowserScanner {
     prefabs: PrefabNames,
     archives: Vec<ArchiveScan>,
+    /// Scanned vault snapshots left out of the report until the page selects them.
+    parked: Vec<ArchiveScan>,
+    /// Names of the archives that came from a vault: the ones the page can include or leave out.
+    selectable: Vec<String>,
     characters: Vec<CharacterScan>,
 }
 
@@ -6512,8 +6630,73 @@ impl BrowserScanner {
             prefabs: PrefabNames::from_text(include_str!("../prefab_names.txt"))
                 .with_biome_text(include_str!("../prefab_biomes.txt")),
             archives: Vec::new(),
+            parked: Vec::new(),
+            selectable: Vec::new(),
             characters: Vec::new(),
         }
+    }
+
+    /// Scans a `.tar.zst` whose zstd window is too large for the worker's JS decoder (see
+    /// [`read_long_window_zst`]). A host backup is added like any other and `null` returned. For a
+    /// valheim-vault store, snapshots on the timeline join the report, duplicates and `-scrubbed`
+    /// branches are scanned but parked, snapshots without a world are only listed, and every
+    /// snapshot is returned as JSON for the page's picker.
+    pub fn add_long_window_zst(&mut self, name: &str, bytes: &[u8]) -> Result<String, JsValue> {
+        let name = browser_filename(name);
+        let js_error = |error: ScanError| JsValue::from_str(&error.to_string());
+        let snapshots = match read_long_window_zst(bytes, &name, &self.prefabs).map_err(js_error)? {
+            LongWindowZst::Vault(snapshots) => snapshots,
+            LongWindowZst::Backup(tar) => {
+                let archive = scan_tar_bytes(&tar, &name, &self.prefabs).map_err(js_error)?;
+                self.archives.push(archive);
+                self.sort_inputs();
+                return Ok("null".to_string());
+            }
+        };
+        let mut rows = Vec::new();
+        for snapshot in snapshots {
+            let note = vault_snapshot_note(&snapshot);
+            let has_world = snapshot.scan.format != "metadata_only_incomplete";
+            let scan = snapshot.scan;
+            rows.push(format!(
+                "{{\"archive\":{},\"snapshot\":{},\"included\":{},\"selectable\":{},\"note\":{},\"zdo_count\":{},\"flagged\":{}}}",
+                json_string(&browser_filename(&scan.archive)),
+                json_string(&browser_filename(&scan.snapshot)),
+                has_world && note.is_none(),
+                has_world,
+                note.as_deref().map(json_string).unwrap_or_else(|| "null".to_string()),
+                scan.zdo_count,
+                scan.evidence.len(),
+            ));
+            if has_world {
+                self.selectable.push(scan.archive.clone());
+                if note.is_none() {
+                    self.archives.push(scan);
+                } else {
+                    self.parked.push(scan);
+                }
+            }
+        }
+        self.sort_inputs();
+        Ok(format!("[{}]", rows.join(",")))
+    }
+
+    /// Includes exactly the vault snapshots whose archive names are listed (one per line) and
+    /// parks the other vault snapshots. Archives that did not come from a vault are untouched.
+    pub fn select_vault_archives(&mut self, names: &str) {
+        let wanted: Vec<&str> = names.lines().collect();
+        let included =
+            |archive: &ArchiveScan| wanted.contains(&browser_filename(&archive.archive).as_str());
+        let mut all = std::mem::take(&mut self.archives);
+        all.append(&mut self.parked);
+        for archive in all {
+            if !self.selectable.contains(&archive.archive) || included(&archive) {
+                self.archives.push(archive);
+            } else {
+                self.parked.push(archive);
+            }
+        }
+        self.sort_inputs();
     }
 
     pub fn add_tar(&mut self, name: &str, bytes: &[u8]) -> Result<(), JsValue> {
@@ -6633,6 +6816,8 @@ impl BrowserScanner {
 
     pub fn reset(&mut self) {
         self.archives.clear();
+        self.parked.clear();
+        self.selectable.clear();
         self.characters.clear();
     }
 
@@ -7701,6 +7886,45 @@ mod tests {
         assert_eq!(snapshots[3].duplicate_of.as_deref(), Some("2026-09-09"));
         assert_eq!(snapshots[4].duplicate_of, None);
         assert!(snapshots[4].scrubbed && snapshots[4].scan.evidence.is_empty());
+
+        // The browser path: the same vault compressed, detected and decoded with ruzstd.
+        let zst = |bytes: &[u8]| {
+            ruzstd::encoding::compress_to_vec(bytes, ruzstd::encoding::CompressionLevel::Fastest)
+        };
+        let compressed = zst(&tar);
+        let LongWindowZst::Vault(decoded) =
+            read_long_window_zst(&compressed, "vault.tar.zst", &prefabs).unwrap()
+        else {
+            panic!("a vault");
+        };
+        assert_eq!(decoded.len(), snapshots.len());
+        assert!(decoded.iter().zip(&snapshots).all(|(left, right)| {
+            left.scan.evidence.len() == right.scan.evidence.len()
+                && left.duplicate_of == right.duplicate_of
+        }));
+        let notes: Vec<Option<String>> = decoded.iter().map(vault_snapshot_note).collect();
+        assert_eq!(notes[0].as_deref(), Some("holds no world"));
+        assert_eq!(notes[1], None);
+        assert_eq!(notes[2].as_deref(), Some("the same backup as 2026-09-09"));
+        assert_eq!(notes[4].as_deref(), Some("a scrubbed copy"));
+        let mut trailing = compressed.clone();
+        trailing.extend(zst(b"more"));
+        assert!(read_long_window_zst(&trailing, "vault.tar.zst", &prefabs).is_err());
+        let mut corrupt = compressed.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 1;
+        assert!(read_long_window_zst(&corrupt, "vault.tar.zst", &prefabs).is_err());
+        // A host backup starts at SaveDir/, not in a dated snapshot folder: handed back whole.
+        let mut backup = Vec::new();
+        append_tar_entry(&mut backup, "SaveDir/adminlist.txt", b"admins");
+        finish_tar(&mut backup);
+        let LongWindowZst::Backup(bytes) =
+            read_long_window_zst(&zst(&backup), "backup.tar.zst", &prefabs).unwrap()
+        else {
+            panic!("a backup");
+        };
+        assert_eq!(bytes, backup);
+        assert!(read_long_window_zst(b"not zstd", "x.tar.zst", &prefabs).is_err());
     }
 
     #[test]

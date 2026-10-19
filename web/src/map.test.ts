@@ -12,6 +12,7 @@ import {
   mostSevereStatus,
   peakDensity,
   statusFill,
+  firstSeenColor,
 } from './map';
 import type { BiomeDetailRow } from './map';
 
@@ -162,5 +163,14 @@ describe('statusFill', () => {
 
   it('falls back to a neutral colour for an unknown status', () => {
     expect(statusFill('something-else')).toBe(statusFill('observed'));
+  });
+});
+
+describe('firstSeenColor', () => {
+  it('runs from oldest to newest and clamps out-of-range indexes', () => {
+    expect(firstSeenColor(0, 5)).not.toBe(firstSeenColor(4, 5));
+    expect(firstSeenColor(-3, 5)).toBe(firstSeenColor(0, 5));
+    expect(firstSeenColor(9, 5)).toBe(firstSeenColor(4, 5));
+    expect(firstSeenColor(0, 1)).toBe(firstSeenColor(4, 5));
   });
 });

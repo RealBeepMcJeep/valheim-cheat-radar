@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { filterEvidence, sortEvidence, timelineSummary } from './view';
-import type { Evidence } from './types';
+import { TABLE_ROW_LIMIT, defaultSnapshotFilter, filterEvidence, sortEvidence, timelineSummary } from './view';
+import type { Archive, Evidence, Report } from './types';
 
 const row = (overrides: Partial<Evidence> = {}): Evidence => ({
   status: 'new', first_seen_snapshot: '2024-01-02', last_seen_snapshot: '2024-01-02', present_in_latest: true, occurrence_index: 1, archive: 'b.tar.zst', snapshot: '2024-01-02', source: 'b.tar.zst', internal_path: 'world/a.chunk', format: 'chunked_v41', chunk: 'a.chunk', chunk_version: 41, chunk_size: 1, chunk_revision: 2, zdo_ordinal: 1, owner_prefab_hash: 10, owner_prefab_name: 'piece_chest', position: { x: 4, y: 2, z: 1 }, legacy_sector: null, key_hash: 20, key_name: 'itemData', kind: 'direct_item_data', item_hash: 30, item_name: 'Silver', grid: { x: 0, y: 1 }, quality: 1, stack: 5, variant: 0, crafter_name: null, world_level: 0, custom_data_keys: [], ...overrides,
@@ -12,6 +12,21 @@ describe('evidence views', () => {
     expect(filterEvidence(rows, 'silver', 'all', 'all')).toHaveLength(1);
     expect(filterEvidence(rows, '', 'zdo_cheated', 'persisted')).toHaveLength(1);
     expect(filterEvidence(rows, 'missing', 'all', 'all')).toHaveLength(0);
+  });
+
+  it('filters by snapshot', () => {
+    const rows = [row(), row({ snapshot: '2024-01-03' })];
+    expect(filterEvidence(rows, '', 'all', 'all', '2024-01-03')).toHaveLength(1);
+    expect(filterEvidence(rows, '', 'all', 'all', 'all')).toHaveLength(2);
+  });
+
+  it('starts a large multi-snapshot report on its newest snapshot, keeping a still-valid choice', () => {
+    const archive = (snapshot: string) => ({ snapshot }) as Archive;
+    const report = (evidence: number, snapshots: string[]) => ({ archives: snapshots.map(archive), evidence: Array.from({ length: evidence }, () => row()) }) as unknown as Report;
+    expect(defaultSnapshotFilter(report(TABLE_ROW_LIMIT + 1, ['a', 'b']), 'all')).toBe('b');
+    expect(defaultSnapshotFilter(report(TABLE_ROW_LIMIT + 1, ['a', 'b']), 'a')).toBe('a');
+    expect(defaultSnapshotFilter(report(10, ['a', 'b']), 'gone')).toBe('all');
+    expect(defaultSnapshotFilter(report(TABLE_ROW_LIMIT + 1, ['a']), 'all')).toBe('all');
   });
 
   it('sorts without mutating the source array', () => {

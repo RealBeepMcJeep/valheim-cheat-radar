@@ -43,6 +43,23 @@ export class BrowserScanner {
 */
   report_markdown(): string;
 /**
+* Scans a `.tar.zst` whose zstd window is too large for the worker's JS decoder (see
+* [`read_long_window_zst`]). A host backup is added like any other and `null` returned. For a
+* valheim-vault store, snapshots on the timeline join the report, duplicates and `-scrubbed`
+* branches are scanned but parked, snapshots without a world are only listed, and every
+* snapshot is returned as JSON for the page's picker.
+* @param {string} name
+* @param {Uint8Array} bytes
+* @returns {string}
+*/
+  add_long_window_zst(name: string, bytes: Uint8Array): string;
+/**
+* Includes exactly the vault snapshots whose archive names are listed (one per line) and
+* parks the other vault snapshots. Archives that did not come from a vault are untouched.
+* @param {string} names
+*/
+  select_vault_archives(names: string): void;
+/**
 * @param {string} name
 * @param {Uint8Array} bytes
 * @param {number} modified_unix_millis
@@ -118,6 +135,7 @@ export interface InitOutput {
   readonly browserscanner_add_file: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
   readonly browserscanner_add_file_with_metadata: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
   readonly browserscanner_add_file_with_modified_unix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+  readonly browserscanner_add_long_window_zst: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
   readonly browserscanner_add_tar: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
   readonly browserscanner_archive_count: (a: number) => number;
   readonly browserscanner_character_count: (a: number) => number;
@@ -128,6 +146,7 @@ export interface InitOutput {
   readonly browserscanner_reset: (a: number) => void;
   readonly browserscanner_scrub_chunk: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
   readonly browserscanner_scrub_tar: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+  readonly browserscanner_select_vault_archives: (a: number, b: number, c: number) => void;
   readonly browserscanner_set_canonical: (a: number, b: number, c: number) => void;
   readonly browserscrub_audit_json: (a: number, b: number) => void;
   readonly browserscrub_audit_markdown: (a: number, b: number) => void;

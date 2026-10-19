@@ -86,6 +86,20 @@ export function statusFill(status: string): string {
   }
 }
 
+/**
+ * Marker colour by when a record was first seen: `index` of its first snapshot among `count`,
+ * oldest blue through yellow to red for the newest.
+ */
+export function firstSeenColor(index: number, count: number): string {
+  const t = count > 1 ? Math.min(1, Math.max(0, index / (count - 1))) : 1;
+  return `hsl(${Math.round(210 - 210 * t)} 90% ${Math.round(62 - 8 * t)}%)`;
+}
+
+/** CSS gradient matching `firstSeenColor`, for the legend. */
+export function firstSeenGradientCss(): string {
+  return `linear-gradient(90deg, ${[0, 0.25, 0.5, 0.75, 1].map((t) => firstSeenColor(t * 4, 5)).join(', ')})`;
+}
+
 /** Largest single-cell ZDO count, used to normalise the colour ramp. */
 export function peakDensity(cells: MapCell[]): number {
   return cells.reduce((max, [, , count]) => Math.max(max, count), 0);

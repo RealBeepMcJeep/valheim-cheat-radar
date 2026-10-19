@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { errorMessage } from './errors';
-import { ScannerWorkerClient, ScanCancelledError, scrubKind, scrubbedName, type ScannerWorkerLike, type WorkerRequest, type WorkerResponse } from './scan';
+import { ScannerWorkerClient, ScanCancelledError, scrubKind, scrubbedName, zstdWindowBytes, type ScannerWorkerLike, type WorkerRequest, type WorkerResponse } from './scan';
 
 class FakeWorker implements ScannerWorkerLike {
   readonly messages: WorkerRequest[] = [];
@@ -102,5 +102,36 @@ describe('scrubbedName', () => {
     expect(scrubbedName('2026-09-25_abc-340946ab.tar.zst')).toBe('2026-09-25_abc-340946ab-scrubbed.tar.zst');
     expect(scrubbedName('world.TAR')).toBe('world-scrubbed.TAR');
     expect(scrubbedName('00_00__1_1.chunk')).toBe('00_00__1_1.chunk');
+  });
+});
+
+describe('zstdWindowBytes', () => {
+  const magic = [0x28, 0xb5, 0x2f, 0xfd];
+  it('reads the window descriptor, the single-segment content size, and rejects non-zstd bytes', () => {
+    // Window descriptor 0x58: exponent 11 -> 2^21, mantissa 0 (a host backup's 2 MiB).
+    expect(zstdWindowBytes(new Uint8Array([...magic, 0x04, 0x58]))).toBe(2 * 1024 * 1024);
+    // valheim-vault's --long=30: exponent 20 -> 1 GiB.
+    expect(zstdWindowBytes(new Uint8Array([...magic, 0x04, 20 << 3]))).toBe(1024 ** 3);
+    // Mantissa 4 adds four eighths: 1.5 MiB.
+    expect(zstdWindowBytes(new Uint8Array([...magic, 0x04, (10 << 3) | 4]))).toBe(1.5 * 1024 * 1024);
+    // Single segment with a 4-byte content size of 1,000,000.
+    expect(zstdWindowBytes(new Uint8Array([...magic, 0xa0, 0x40, 0x42, 0x0f, 0x00]))).toBe(1_000_000);
+    // Single segment, 2-byte size field: value + 256.
+    expect(zstdWindowBytes(new Uint8Array([...magic, 0x60, 0x00, 0x01]))).toBe(512);
+    expect(zstdWindowBytes(new Uint8Array([1, 2, 3, 4, 5, 6]))).toBe(0);
+  });
+
+  it('hands a vault scan its snapshot list', async () => {
+    const worker = new FakeWorker();
+    const client = new ScannerWorkerClient(() => worker);
+    const scan = client.scanFile(file('valheim-backups.tar.zst'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const vault = [{ archive: 'v#2026-09-09', snapshot: '2026-09-09', included: true, selectable: true, note: null, zdo_count: 6, flagged: 1 }];
+    worker.respond({ id: worker.messages[0].id, type: 'scanned', vault });
+    await expect(scan).resolves.toEqual(vault);
+    const select = client.selectVaultArchives(['v#2026-09-09']);
+    expect(worker.messages[1]).toMatchObject({ type: 'select', archives: ['v#2026-09-09'] });
+    worker.respond({ id: worker.messages[1].id, type: 'scanned' });
+    await expect(select).resolves.toBeUndefined();
   });
 });

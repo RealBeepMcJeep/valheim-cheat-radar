@@ -283,6 +283,54 @@ export class BrowserScanner {
         }
     }
     /**
+    * Scans a `.tar.zst` whose zstd window is too large for the worker's JS decoder (see
+    * [`read_long_window_zst`]). A host backup is added like any other and `null` returned. For a
+    * valheim-vault store, snapshots on the timeline join the report, duplicates and `-scrubbed`
+    * branches are scanned but parked, snapshots without a world are only listed, and every
+    * snapshot is returned as JSON for the page's picker.
+    * @param {string} name
+    * @param {Uint8Array} bytes
+    * @returns {string}
+    */
+    add_long_window_zst(name, bytes) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.browserscanner_add_long_window_zst(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var r0 = getInt32Memory0()[retptr / 4 + 0];
+            var r1 = getInt32Memory0()[retptr / 4 + 1];
+            var r2 = getInt32Memory0()[retptr / 4 + 2];
+            var r3 = getInt32Memory0()[retptr / 4 + 3];
+            var ptr3 = r0;
+            var len3 = r1;
+            if (r3) {
+                ptr3 = 0; len3 = 0;
+                throw takeObject(r2);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+    * Includes exactly the vault snapshots whose archive names are listed (one per line) and
+    * parks the other vault snapshots. Archives that did not come from a vault are untouched.
+    * @param {string} names
+    */
+    select_vault_archives(names) {
+        const ptr0 = passStringToWasm0(names, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.browserscanner_select_vault_archives(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
     * @param {string} name
     * @param {Uint8Array} bytes
     * @param {number} modified_unix_millis
